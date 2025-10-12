@@ -2,6 +2,7 @@
     "name": "rawnode-esm",
     "version": "1.0.0",
     "description": "RawNode ESM",
+    "type": "module",
     "main": "src/index.js",
     "bin": {
         "rawnode-esm": "./bin/index.js"

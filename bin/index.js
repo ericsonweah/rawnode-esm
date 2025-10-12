@@ -2,4 +2,6 @@
 
 // Main cli entry point (public API)
 
-require('../src');
+import App  from '../src';
+
+export default App;

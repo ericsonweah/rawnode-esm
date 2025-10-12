@@ -1,2 +1,1 @@
-// Helper functions
-module.exports = {};
+export default  {};

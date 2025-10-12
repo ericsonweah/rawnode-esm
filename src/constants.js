@@ -1,2 +1,1 @@
-// Constants
-module.exports = {};
+export default  {};

@@ -1,2 +1,1 @@
-// Core functionality of locals
-module.exports = {};
+export default  {};

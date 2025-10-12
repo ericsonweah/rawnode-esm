@@ -1,2 +1,1 @@
-// Core functionality
-module.exports = {};
+export default  {};

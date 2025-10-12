@@ -1,5 +1,5 @@
 "use strict" 
 
-// require('./../../../bootstrap/app.js')
+import App  from './src';
 
-module.exports = require('./src');
+export default App;
