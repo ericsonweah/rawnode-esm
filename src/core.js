@@ -1,0 +1,2 @@
+// Core functionality
+module.exports = {};
