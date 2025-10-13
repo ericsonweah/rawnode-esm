@@ -1,6 +1,5 @@
 "use strict"  
 
 
-import App  from './src/index.js';
-
-export default App;
+const App  = require('./src/submodules/app')
+module.exports = App

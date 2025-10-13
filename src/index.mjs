@@ -1,49 +1,116 @@
 import { discover } from './discover.mjs';
-import { scanFiles } from './scan.mjs';
-import { analyzeFiles } from './analyze.mjs';
-import { planFiles } from './plan.mjs';
-import { transformFiles } from './transform.mjs';
-import { verifyFiles } from './verify.mjs';
-import { initObservers, finishObservers } from './observability.mjs';
-import { initCache } from './cache.mjs';
-import { unifiedDiff } from './diff.mjs';
+import { createWorkerPool } from './worker.mjs';
+import { analyze } from './analyze.mjs';
+import { planFile } from './plan.mjs';
+import { applyEdits } from './transform.mjs';
+import { verify } from './verify.mjs';
+import { Logger, Metrics } from './observability.mjs';
+import { readFile, writeFile } from 'node:fs/promises';
+import { hashContent, Cache } from './cache.mjs';
+import { normalizePosix } from './utils.mjs';
 
-export async function convert(cfg) {
-  const ctx = await initObservers(cfg);
-  const cache = await initCache(cfg);
-  ctx.cache = cache;
+export async function convert(config) {
+  const {
+    roots, include, exclude, risk, concurrency, plugins,
+    dryRun, check, report, printDiff, cacheDir, planOnly, resolvePolicy
+  } = config;
 
-  const files = await discover(cfg, ctx);
-  ctx.emit({ type: 'discover.done', files: files.length });
+  const logger = new Logger({ mode: report });
+  const metrics = new Metrics();
+  const pluginCtx = makePluginCtx({ logger, metrics, risk, resolvePolicy });
+  const hook = composePlugins(plugins, pluginCtx);
 
-  const scanned = await scanFiles(files, cfg, ctx);
-  const analyzed = await analyzeFiles(scanned, cfg, ctx);
-  const plans = await planFiles(analyzed, cfg, ctx);
+  const files = await discover({ roots, include, exclude, hook, logger });
+  const pool = createWorkerPool({ size: concurrency, logger });
+  const cache = new Cache(cacheDir);
 
-  if (cfg.planOnly) {
-    ctx.emit({ type: 'plan.only', plans });
-    await finishObservers(ctx, { changedCount: 0 });
-    return { changedCount: 0 };
-  }
+  let changedFiles = 0, errors = 0, warnings = 0;
+  const results = [];
 
-  const transformed = await transformFiles(plans, cfg, ctx);
-  const verified = await verifyFiles(transformed, cfg, ctx);
+  await hook.onDiscover?.(files);
 
-  let changedCount = 0;
-  for (const f of verified) {
-    if (cfg.dryRun) {
-      if (cfg.printDiff && f.changed) {
-        const diff = unifiedDiff(f.original, f.output, f.path);
-        ctx.emit({ type: 'diff', file: f.path, diff });
-      }
-    } else {
-      if (f.changed) {
-        await ctx.writeFile(f.path, f.output);
-        changedCount++;
-      }
+  for (const file of files) {
+    const abs = file.path;
+    const content = await readFile(abs, 'utf8');
+    const contentHash = hashContent(content);
+
+    let facts = await cache.getFacts(abs, contentHash);
+    if (!facts) facts = await pool.scan({ path: abs, content });
+
+    await hook.onAnalyze?.(abs, facts);
+
+    const analysis = analyze({ path: abs, facts });
+    const plan = planFile({ path: abs, content, facts, analysis, risk, resolvePolicy, logger });
+
+    await hook.onPlan?.(abs, plan);
+
+    if (planOnly) { results.push({ file: abs, plan }); continue; }
+
+    let out = content;
+    if (plan.edits.length) {
+      out = applyEdits(content, plan.edits);
+      changedFiles++;
     }
+
+    const report = await verify({ path: abs, content: out, facts, plan });
+    for (const d of (plan.warnings ?? [])) { logger.warn(d.message, d); warnings++; }
+    for (const d of (report.errors ?? [])) { logger.error(d.message, d); errors++; }
+
+    await hook.onVerify?.(abs, report);
+
+    if (!dryRun && plan.edits.length) await writeFile(abs, out);
+
+    await cache.putFacts(abs, contentHash, facts);
+    await hook.onWrite?.(abs, { changed: plan.edits.length > 0 });
+    if (printDiff && plan.edits.length) logger.printDiff(content, out, normalizePosix(abs));
   }
 
-  await finishObservers(ctx, { changedCount });
-  return { changedCount };
+  const summary = { files: files.length, changedFiles, warnings, errors, metrics: metrics.snapshot() };
+  await hook.onEnd?.(summary);
+  logger.summary(summary);
+  await pool.close();
+  return summary;
+}
+
+function makePluginCtx({ logger, metrics, risk, resolvePolicy }) {
+  const ctx = {
+    logger,
+    metrics,
+    riskProfile: risk,
+    resolvePolicy,
+    statCache: new Map(),
+    addWarning(d) { logger.warn(d.message, d); },
+    async read(path) { const { readFile } = await import('node:fs/promises'); return readFile(path, 'utf8'); },
+    async write(path, s) { const { writeFile } = await import('node:fs/promises'); return writeFile(path, s); },
+    createRequireShim() {
+      return {
+        ident: 'require',
+        importText:
+`import { createRequire as __createRequire } from 'node:module';
+const require = __createRequire(import.meta.url);`
+      };
+    },
+    async resolveSpecifier(from, spec) {
+      const { resolveSpecifier } = await import('./utils.mjs');
+      return resolveSpecifier(from, spec, this.statCache);
+    },
+    registerFileDependency() {}
+  };
+  return ctx;
+}
+
+function composePlugins(mods, ctx) {
+  const hooks = mods.map(m => (m.setup?.(ctx)) ?? {});
+  const wrap = name => async (...args) => {
+    for (const h of hooks) if (typeof h[name] === 'function') await h[name](...args);
+  };
+  return {
+    onDiscover: hooks.some(h=>h.onDiscover)? wrap('onDiscover'):null,
+    onAnalyze:  hooks.some(h=>h.onAnalyze)?  wrap('onAnalyze'):null,
+    onPlan:     hooks.some(h=>h.onPlan)?     wrap('onPlan'):null,
+    onTransform:hooks.some(h=>h.onTransform)?wrap('onTransform'):null,
+    onVerify:   hooks.some(h=>h.onVerify)?   wrap('onVerify'):null,
+    onWrite:    hooks.some(h=>h.onWrite)?    wrap('onWrite'):null,
+    onEnd:      hooks.some(h=>h.onEnd)?      wrap('onEnd'):null,
+  };
 }

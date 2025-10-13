@@ -1,27 +1,14 @@
-import { readFile } from 'node:fs/promises';
+export function applyEdits(src, edits) {
+  // Sort by start, then end, then stable index
+  const ord = edits.map((e, i) => ({...e, __i:i}))
+    .sort((a,b)=> a.start-b.start || a.end-b.end || a.__i-b.__i);
 
-function applyEdits(src, edits) {
-  // Edits: {start,end,insert}; must be non-overlapping, sorted by start asc.
-  const sorted = edits.slice().sort((a,b)=>a.start-b.start);
-  let out = '', last = 0;
-  for (const e of sorted) {
-    out += src.slice(last, e.start) + (e.insert ?? '');
-    last = e.end;
+  let out = '', cursor = 0;
+  for (const e of ord) {
+    if (e.start < cursor) throw new Error(`Overlapping edit at ${e.start}-${e.end}`);
+    out += src.slice(cursor, e.start) + e.text;
+    cursor = e.end;
   }
-  out += src.slice(last);
-  return out;
-}
-
-export async function transformFiles(plans, cfg, ctx) {
-  const out = [];
-  for (const p of plans) {
-    const original = await ctx.readFile(p.path);
-    let header = '';
-    if (p.shims.length > 0) header += p.shims.join('');
-    const body = applyEdits(original, p.edits);
-    const output = header ? header + '\n' + body : body;
-    out.push({ path: p.path, original, output, changed: output !== original });
-    ctx.emit({ type: 'transform.file', path: p.path, changed: output !== original });
-  }
+  out += src.slice(cursor);
   return out;
 }

@@ -1,28 +1,34 @@
 import { performance } from 'node:perf_hooks';
-import { writeFile, readFile } from 'node:fs/promises';
 
-export async function initObservers(cfg) {
-  const t0 = performance.now();
-  const events = [];
-  const logger = {
-    info:o=>events.push({ts:performance.now(),level:'info',...o}),
-    warn:o=>events.push({ts:performance.now(),level:'warn',...o}),
-    error:o=>events.push({ts:performance.now(),level:'error',...o}),
-  };
-  function emit(evt) { events.push({ ts: performance.now(), ...evt }); cfg.onProgress?.(evt); }
-  async function writeFile2(p, c) { return writeFile(p, c, 'utf8'); }
-  async function readFile2(p) { return readFile(p, 'utf8'); }
-  return {
-    emit, logger,
-    readFile: readFile2, writeFile: writeFile2,
-    metrics: { inc:()=>{}, time: async (_n, fn)=> fn() },
-    warn: (d)=>emit({ type:'warn', diag:d }),
-    start: t0,
-    cfg, events
-  };
+export class Logger {
+  constructor({ mode='pretty' }={}) { this.mode = mode; }
+  info(msg, obj)  { this.#emit('info', msg, obj); }
+  warn(msg, obj)  { this.#emit('warn', msg, obj); }
+  error(msg, obj) { this.#emit('error', msg, obj); }
+  summary(s) { this.#emit('info', 'summary', s); }
+  printDiff(a, b, path) {
+    const diff = renderUnifiedDiff(a, b, path);
+    process.stdout.write(diff + '\n');
+  }
+  #emit(level, msg, obj) {
+    if (this.mode === 'json') {
+      process.stdout.write(JSON.stringify({ level, msg, ...obj }) + '\n');
+    } else {
+      const tag = level.toUpperCase().padEnd(5);
+      process.stdout.write(`[${tag}] ${msg}${obj ? ' ' + JSON.stringify(obj) : ''}\n`);
+    }
+  }
 }
 
-export async function finishObservers(ctx, summary) {
-  ctx.emit({ type: 'summary', summary, ms: (performance.now()-ctx.start)|0 });
-  return summary;
+export class Metrics {
+  constructor() { this._c = new Map(); }
+  counter(name){ const c=this._c.get(name)||{n:0}; this._c.set(name,c); return { inc:(k=1)=>{c.n+=k;} }; }
+  snapshot(){ const o={}; for(const [k,v] of this._c) o[k]=v.n; return o; }
+}
+
+export function renderUnifiedDiff(a, b, path) {
+  // Minimal diff: show old/new length and a simple header; (placeholder for richer diff)
+  const al = a.split('\n'), bl = b.split('\n');
+  const header = `--- a/${path}\n+++ b/${path}\n@@ -1,${al.length} +1,${bl.length} @@\n`;
+  return header + bl.join('\n');
 }

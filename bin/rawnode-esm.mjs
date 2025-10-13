@@ -1,59 +1,51 @@
 #!/usr/bin/env node
+import { parseArgs } from 'node:util';
 import { convert } from '../src/index.mjs';
-import { fileURLToPath } from 'node:url';
-import { basename } from 'node:path';
+import os from 'node:os';
 
-const argv = process.argv.slice(2);
-function parseArgs(args) {
-  const opts = {
-    roots: [], risk: 'safe', concurrency: undefined,
-    include: ['**/*.js','**/*.cjs'], exclude: ['node_modules/**','dist/**'],
-    dryRun: false, check: false, report: 'pretty', printDiff: false,
-    plugins: [], timeout: 0, cacheDir: './.rawnode-esm',
-    tla: false, resolveStrategy: 'require', planOnly: false, specifiers: 'node'
-  };
-  for (let i = 0; i < args.length; i++) {
-    const a = args[i];
-    if (!a.startsWith('-')) { opts.roots.push(a); continue; }
-    const next = () => args[++i];
-    switch (a) {
-      case '--dry-run': opts.dryRun = true; break;
-      case '--check': opts.check = true; break;
-      case '--fix': opts.dryRun = false; break;
-      case '--risk': opts.risk = next(); break;
-      case '--concurrency': opts.concurrency = Number(next()); break;
-      case '--include': opts.include = next().split(','); break;
-      case '--exclude': opts.exclude = next().split(','); break;
-      case '--report': opts.report = next(); break;
-      case '--print-diff': opts.printDiff = true; break;
-      case '--plugins': opts.plugins = next().split(','); break;
-      case '--timeout': opts.timeout = Number(next()); break;
-      case '--cache-dir': opts.cacheDir = next(); break;
-      case '--tla': opts.tla = next() === 'ok'; break;
-      case '--resolve': opts.resolveStrategy = next(); break;
-      case '--plan-only': opts.planOnly = true; break;
-      case '--specifiers': opts.specifiers = next(); break;
-      default: console.error(`Unknown option: ${a}`); process.exit(1);
-    }
+const { positionals, values } = parseArgs({
+  allowPositionals: true,
+  options: {
+    'dry-run': { type: 'boolean', default: false },
+    check: { type: 'boolean', default: false },
+    fix: { type: 'boolean', default: false },
+    risk: { type: 'string', default: 'safe' },
+    concurrency: { type: 'string' },
+    include: { type: 'string' },
+    exclude: { type: 'string' },
+    plugins: { type: 'string' },
+    report: { type: 'string', default: 'pretty' },
+    'print-diff': { type: 'boolean', default: false },
+    'cache-dir': { type: 'string', default: './.rawnode-esm' },
+    timeout: { type: 'string' },
+    'plan-only': { type: 'boolean', default: false },
+    'resolve-policy': { type: 'string', default: 'node-prefix' }
   }
-  if (opts.roots.length === 0) opts.roots = ['.'];
-  return opts;
+});
+
+const cfg = {
+  roots: positionals.length ? positionals : ['.'],
+  dryRun: values['dry-run'],
+  check: values.check,
+  fix: values.fix,
+  risk: values.risk === 'aggressive' ? 'aggressive' : 'safe',
+  concurrency: Math.max(1, Number(values.concurrency ?? Math.min(8, os.cpus().length))),
+  include: (values.include ?? '**/*.js,**/*.cjs').split(',').map(s => s.trim()),
+  exclude: (values.exclude ?? 'node_modules/**,dist/**').split(',').map(s => s.trim()),
+  plugins: (values.plugins ?? '').split(',').map(s => s.trim()).filter(Boolean),
+  report: values.report === 'json' ? 'json' : 'pretty',
+  printDiff: values['print-diff'],
+  cacheDir: values['cache-dir'],
+  timeout: Number(values.timeout ?? 0) || 0,
+  planOnly: !!values['plan-only'],
+  resolvePolicy: values['resolve-policy']
+};
+
+const loadedPlugins = [];
+for (const p of cfg.plugins) {
+  const mod = await import(p);
+  loadedPlugins.push(mod);
 }
+const res = await convert({ ...cfg, plugins: loadedPlugins, onProgress: () => {} });
 
-(async () => {
-  try {
-    const opts = parseArgs(argv);
-    const result = await convert({
-      ...opts,
-      plugins: await Promise.all(opts.plugins.filter(Boolean).map(async p => {
-        const mod = await import(p);
-        return (mod.setup ?? mod.default?.setup ?? (() => ({})))(/* ctx injected by convert */);
-      }))
-    });
-    if (opts.check && result.changedCount > 0) process.exit(2);
-  } catch (e) {
-    const name = basename(fileURLToPath(import.meta.url));
-    console.error(`[${name}] error:`, e?.stack || e);
-    process.exit(1);
-  }
-})();
+if (cfg.check && (res.changedFiles > 0 || res.errors > 0)) process.exit(1);

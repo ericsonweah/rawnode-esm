@@ -1,18 +1,24 @@
-import { mkdir, readFile, writeFile, stat } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
-import { posix as path } from 'node:path';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 
-export async function initCache(cfg) {
-  await mkdir(cfg.cacheDir, { recursive: true });
-  function hash(content) {
-    return createHash('sha256').update(content).digest('hex');
-  }
-  async function read(p) {
-    try { return JSON.parse(await readFile(path.join(cfg.cacheDir, p), 'utf8')); }
-    catch { return null; }
-  }
-  async function write(p, obj) {
-    await writeFile(path.join(cfg.cacheDir, p), JSON.stringify(obj, null, 0));
-  }
-  return { hash, read, write };
+export function hashContent(s) {
+  return createHash('sha256').update(s).digest('hex');
 }
+
+export class Cache {
+  constructor(dir) { this.dir = dir; this.ready = mkdir(dir, { recursive:true }); }
+  async getFacts(path, contentHash) {
+    await this.ready;
+    try {
+      const j = await readFile(join(this.dir, safe(path) + '.' + contentHash + '.facts.json'), 'utf8');
+      return JSON.parse(j);
+    } catch { return null; }
+  }
+  async putFacts(path, contentHash, facts) {
+    await this.ready;
+    const p = join(this.dir, safe(path) + '.' + contentHash + '.facts.json');
+    await writeFile(p, JSON.stringify(facts));
+  }
+}
+function safe(p){ return p.replace(/[^A-Za-z0-9_.-]+/g,'_'); }

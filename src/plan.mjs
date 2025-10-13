@@ -1,87 +1,92 @@
-import { createRequire } from 'node:module';
-import { posix as path } from 'node:path';
-import { pathToFileURL, fileURLToPath } from 'node:url';
+import { isNodeCore, toNodeSpecifier, slug } from './utils.mjs';
 
-const CORE = new Set([
-  'assert','buffer','child_process','cluster','crypto','dgram','dns','domain','events','fs','http','http2','https','inspector','module','net','os','path','perf_hooks','process','punycode','querystring','readline','repl','stream','string_decoder','timers','tls','tty','url','util','v8','vm','zlib'
-]);
+export function planFile({ path, content, facts, analysis, risk, resolvePolicy, logger }) {
+  const edits = [];
+  const warnings = [];
+  const decls = new Set(); // imports to hoist (text -> once)
+  const nsMap = new Map(); // spec -> ns ident for interop
+  const topInsertions = [];
 
-function toPosix(p) { return p.split('\\').join('/'); }
+  const addWarning = (code, message, hint) => warnings.push({ file:path, code, level:'warn', message, hint });
 
-function toNodeSpecifier(spec, policy='node') {
-  if (policy !== 'node') return spec;
-  if (CORE.has(spec)) return 'node:' + spec;
-  return spec;
-}
+  const ensureNS = (spec) => {
+    if (nsMap.has(spec)) return nsMap.get(spec);
+    const id = `__ns_${slug(spec)}`;
+    nsMap.set(spec, id);
+    // normalize node: prefix
+    const spec2 = isNodeCore(spec) ? toNodeSpecifier(spec) : spec;
+    decls.add(`import * as ${id} from '${spec2}';`);
+    return id;
+  };
 
-export async function planFiles(filesFacts, cfg, ctx) {
-  const plans = [];
-  for (const f of filesFacts) {
-    const edits = [];
-    const importEdits = [];
-    const shims = new Set();
-
-    // __dirname/__filename shim
-    if (f.hasDirname || f.hasFilename) {
-      shims.add([
-        "import { fileURLToPath } from 'node:url';\n",
-        "import { dirname } from 'node:path';\n",
-        "const __filename = fileURLToPath(import.meta.url);\n",
-        "const __dirname  = dirname(__filename);\n"
-      ].join(''));
-    }
-
-    // require.resolve → createRequire().resolve
-    for (const rr of f.requireResolveSites) {
-      const replacement = [
-        "import { createRequire } from 'node:module';\n",
-        "const require = createRequire(import.meta.url);\n"
-      ].join('');
-      shims.add(replacement);
-      edits.push({ start: rr.callRange[0], end: rr.callRange[1], insert:
-        `require.resolve(${rr.quote}${rr.specRaw}${rr.quote})`
-      });
-    }
-
-    // require() sites
-    for (const r of f.requireSites) {
-      const spec0 = r.specRaw;
-      const isCore = CORE.has(spec0);
-      const spec = isCore ? toNodeSpecifier(spec0, cfg.specifiers) : spec0;
-
-      if (r.kind === 'top') {
-        // Side-effect? (stub detection)
-        const isSideEffect = false;
-        if (isSideEffect) {
-          importEdits.push({ kind:'import', spec, isCore });
-          edits.push({ start: r.calleeRange[0], end: r.calleeRange[1], insert: `import ${r.quote}${spec}${r.quote}` });
-        } else {
-          // Safe namespace + default coalesce
-          importEdits.push({ kind:'import', spec, isCore });
-          const ns = '__ns_' + plans.length + '_' + importEdits.length;
-          const repl = `/*rawnode-esm*/(async()=>{const ${ns}=await import(${r.quote}${spec}${r.quote});return (${ns}.default ?? ${ns});})()`;
-          // In safe mode but without TLA we cannot await here; fallback:
-          // Use createRequire shim as the safe default for synchronous require semantics.
-          const shim = [
-            "import { createRequire } from 'node:module';\n",
-            "const require = createRequire(import.meta.url);\n"
-          ].join('');
-          shims.add(shim);
-          edits.push({ start: r.calleeRange[0], end: r.calleeRange[1], insert: 'require' });
-          edits.push({ start: r.argRange[0], end: r.argRange[1], insert: `${r.quote}${spec}${r.quote}` });
-        }
-      } else {
-        // guarded/local → keep require semantics; normalize core/local spec if safe
-        const shim = [
-          "import { createRequire } from 'node:module';\n",
-          "const require = createRequire(import.meta.url);\n"
-        ].join('');
-        shims.add(shim);
-        edits.push({ start: r.argRange[0], end: r.argRange[1], insert: `${r.quote}${spec}${r.quote}` });
-      }
-    }
-
-    plans.push({ path: f.path, shims: Array.from(shims), importEdits, edits, facts: f });
+  // __dirname/__filename
+  if (facts.uses.__dirname || facts.uses.__filename) {
+    topInsertions.push(
+`import { fileURLToPath } from 'node:url';
+import { dirname as __dirname_fn } from 'node:path';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname  = __dirname_fn(__filename);`
+    );
   }
-  return plans;
+
+  // require.resolve shim
+  if (facts.requires.some(r => r.callee === 'require.resolve')) {
+    topInsertions.push(
+`import { createRequire as __createRequire } from 'node:module';
+const require = __createRequire(import.meta.url);`
+    );
+  }
+
+  // per-site
+  for (const r of facts.requires) {
+    if (r.callee === 'require.resolve') continue; // shim handled
+    if (!r.arg) { addWarning('CJS-DYN-REQUIRE', 'Dynamic require cannot be converted safely.', 'Use createRequire/import() manually.'); continue; }
+
+    let spec = r.arg;
+    if (isNodeCore(spec)) spec = toNodeSpecifier(spec);
+
+    // side-effect only
+    if (r.pattern === 'side-effect' && r.topLevel) {
+      edits.push({ start: r.start, end: r.end, text: `import '${spec}';`, why:'side-effect', code:'CJS-SFX' });
+      continue;
+    }
+
+    // destructure of core (already captured as 'destructure' pattern)
+    if (r.pattern === 'destructure' && isNodeCore(spec)) {
+      // We can't reconstruct exact named list here w/o LHS parse; safe fallback:
+      const ns = ensureNS(spec);
+      // keep original; warn that aggressive could map to named import
+      addWarning('CJS-AMB-DESTRUCTURE', `Destructured require('${spec}') kept via namespace interop.`, 'Use risk=aggressive.');
+      continue;
+    }
+
+    // default-like assign
+    if (r.pattern === 'assign') {
+      if (risk === 'aggressive' && !isNodeCore(spec)) {
+        // Try default import; still safe for local files discovered to be default-shaped
+        decls.add(`import ${`__tmp_${slug(spec)}`} from '${spec}';`);
+        // Replace the whole require expression with the imported identifier:
+        const id = `__tmp_${slug(spec)}`;
+        edits.push({ start: r.start, end: r.end, text: id, why:'default-aggressive', code:'CJS-ASSIGN-DFLT' });
+      } else {
+        const ns = ensureNS(spec);
+        edits.push({ start: r.start, end: r.end, text: `${ns}.default ?? ${ns}`, why:'interop', code:'CJS-ASSIGN-NS' });
+        addWarning('CJS-AMB-DEFAULT', `Using namespace interop for '${spec}'.`, 'Use risk=aggressive to try default import when safe.');
+      }
+      continue;
+    }
+  }
+
+  // inject hoisted imports at top (once)
+  if (decls.size || topInsertions.length) {
+    const header = [...topInsertions, ...decls].join('\n');
+    // Insert at beginning (preserve shebang if present)
+    const shebang = content.startsWith('#!') ? content.split('\n',1)[0] : null;
+    const offset = shebang ? shebang.length+1 : 0;
+    const text = shebang ? `${shebang}\n${header}\n` : `${header}\n`;
+    const start = 0 + offset, end = 0 + offset;
+    edits.unshift({ start, end, text, why:'imports-hoist', code:'CJS-HDR' });
+  }
+
+  return { edits, warnings, shims:{ dirname:facts.uses.__dirname || facts.uses.__filename, requireResolve: facts.requires.some(r=>r.callee==='require.resolve') } };
 }

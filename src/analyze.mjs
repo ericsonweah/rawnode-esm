@@ -1,11 +1,19 @@
-export async function analyzeFiles(factsArr, cfg, ctx) {
-  // Stub: decorate with rough classifications; real impl uses tokenizer stacks.
-  for (const f of factsArr) {
-    for (const r of f.requireSites) {
-      // todo: detect assignment/side-effect by token proximity; here default to top.
-      r.kind = r.kind || 'top';
-    }
+export function analyze({ path, facts }) {
+  // Infer export shape
+  let shape = 'none';
+  let hasModuleExports = false, hasNamed = false;
+
+  for (const e of facts.exports) {
+    if (e.kind === 'module.exports') hasModuleExports = true;
+    if (e.kind === 'exports.name')   hasNamed = true;
   }
-  ctx.emit({ type: 'analyze.done', files: factsArr.length });
-  return factsArr;
+  if (hasModuleExports && hasNamed) shape = 'hybrid';
+  else if (hasModuleExports) shape = 'default';
+  else if (hasNamed) shape = 'named';
+  else shape = 'unknown';
+
+  const hasDyn = facts.requires.some(r => r.pattern === 'dynamic');
+  const hasTryCatch = false; // would be flagged at scan if implemented
+
+  return { exportShape: shape, hasDynamicRequire: hasDyn, hasTryCatch };
 }
