@@ -1,16 +1,35 @@
 {
-    "name": "rawnode-esm",
-    "version": "1.0.0",
-    "description": "RawNode ESM",
-    "type": "module",
-    "main": "src/index.js",
-    "bin": {
-        "rawnode-esm": "./bin/index.js"
-    },
-    "scripts": {
-        "test": "node tests/rawnode-esm.test.js"
-    },
-    "keywords": [],
-    "author": "RawNode.org",
-    "license": "MIT"
+  "name": "rawnode-esm",
+  "version": "1.0.0",
+  "description": "intelligent CommonJS → ESM conversion engine",
+  "keywords": [
+    "intelligent",
+    "CommonJS",
+    "→",
+    "ESM",
+    "conversion",
+    "engine"
+  ],
+  "homepage": "https://github.com/ericsonweah/rawnode-esm#readme",
+  "bugs": {
+    "url": "https://github.com/ericsonweah/rawnode-esm/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ericsonweah/rawnode-esm.git"
+  },
+  "license": "ISC",
+  "author": "Raw Node",
+  "type": "module",
+  "main": "index.mjs",
+  "bin": {
+    "rawnode-esm": "bin/rawnode-esm.mjs"
+  },
+  "directories": {
+    "doc": "docs",
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "test"
+  }
 }
