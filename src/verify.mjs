@@ -1,3 +1,7 @@
+'use strict';
+
+// /src/verify.mjs
+
 import { scanSource } from './scan.mjs';
 import { performance } from 'node:perf_hooks';
 

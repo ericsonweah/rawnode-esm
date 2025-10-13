@@ -1,3 +1,7 @@
+'use strict';
+
+// /src/discover.mjs
+
 import { opendir, lstat } from 'node:fs/promises';
 import { join, resolve, posix } from 'node:path';
 import { normalizePosix, compileGlob } from './utils.mjs';

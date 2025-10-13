@@ -1,3 +1,7 @@
+'use strict';
+
+// /src/index.mjs
+
 import { discover } from './discover.mjs';
 import { createWorkerPool } from './worker.mjs';
 import { analyze } from './analyze.mjs';

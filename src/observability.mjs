@@ -1,3 +1,7 @@
+'use strict';
+
+// /src/observability.mjs
+
 import { performance } from 'node:perf_hooks';
 
 export class Logger {

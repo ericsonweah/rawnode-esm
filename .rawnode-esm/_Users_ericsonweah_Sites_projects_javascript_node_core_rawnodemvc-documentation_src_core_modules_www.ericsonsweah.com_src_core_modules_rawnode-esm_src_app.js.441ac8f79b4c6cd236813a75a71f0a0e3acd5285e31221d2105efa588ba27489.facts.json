@@ -1,0 +1,1 @@
+{"requires":[{"start":11,"end":27,"callee":"require","arg":"./lib","topLevel":true,"pattern":"assign","idents":[]}],"exports":[],"uses":{"__dirname":false,"__filename":false,"requireResolve":[],"createRequire":false},"amd":false}

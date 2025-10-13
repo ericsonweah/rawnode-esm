@@ -1,3 +1,7 @@
+'use strict';
+
+// /src/plugins/example.mjs
+
 export const meta = { name: 'example', version: '1.0.0' };
 export function setup(ctx) {
   return {

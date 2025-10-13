@@ -1,3 +1,8 @@
+
+'use strict';
+
+// /src/analyze.mjs
+
 export function analyze({ path, facts }) {
   // Infer export shape
   let shape = 'none';

@@ -1,3 +1,7 @@
+
+'use strict';
+
+// /scan.mjs
 // Minimal, fast, AST-less scanner for require/exports/__dirname/__filename
 export function scanSource(src) {
   const facts = { requires: [], exports: [], uses:{ __dirname:false, __filename:false, requireResolve:[], createRequire:false }, amd:false };

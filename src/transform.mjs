@@ -1,3 +1,5 @@
+'use strict';
+// /src/transform.mjs
 export function applyEdits(src, edits) {
   // Sort by start, then end, then stable index
   const ord = edits.map((e, i) => ({...e, __i:i}))

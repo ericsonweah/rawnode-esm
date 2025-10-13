@@ -1,3 +1,7 @@
+'use strict';
+
+// /src/plan.mjs
+
 import { isNodeCore, toNodeSpecifier, slug } from './utils.mjs';
 
 export function planFile({ path, content, facts, analysis, risk, resolvePolicy, logger }) {

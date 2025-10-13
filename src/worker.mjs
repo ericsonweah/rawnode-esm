@@ -1,3 +1,7 @@
+'use strict';
+
+// /src/worker.mjs
+
 import { isMainThread, parentPort, Worker } from 'node:worker_threads';
 import { scanSource } from './scan.mjs';
 import { cpus } from 'node:os';

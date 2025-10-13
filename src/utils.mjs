@@ -1,3 +1,7 @@
+'use strict';
+
+// /src/utils.mjs
+
 import { builtinModules } from 'node:module';
 import { resolve, dirname, extname, sep, posix } from 'node:path';
 import { stat, readFile } from 'node:fs/promises';

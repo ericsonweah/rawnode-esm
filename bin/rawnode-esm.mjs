@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+
+// /bin/rawnode-esm.mjs
 import { parseArgs } from 'node:util';
 import { convert } from '../src/index.mjs';
 import os from 'node:os';
