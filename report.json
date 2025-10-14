@@ -1,53 +1,85 @@
 {
-  "timestamp": "2025-10-14T13:08:10.848Z",
+  "timestamp": "2025-10-14T15:59:11.460Z",
   "target": "/Users/ericsonweah/Sites/projects/javascript/node/core/rawnodemvc-documentation/src/core/modules/www.ericsonsweah.com/src/core/modules/rawnode-esm",
   "dirsProcessed": 6,
-  "filesConverted": 4,
+  "filesConverted": 0,
   "dryRun": false,
   "concurrency": 32,
-  "elapsedSeconds": 0.15,
+  "elapsedSeconds": 0.19,
   "perWorkerStats": [
     {
       "workerId": 1,
       "dirsProcessed": 1,
-      "filesConverted": 2,
-      "activeMs": 47,
-      "totalMs": 0
+      "filesConverted": 0,
+      "activeMs": 74,
+      "totalMs": 0,
+      "batchSize": 0,
+      "avgMsPerBatch": 0,
+      "throughput": 0,
+      "queueRemaining": 0
     },
     {
       "workerId": 2,
       "dirsProcessed": 1,
       "filesConverted": 0,
-      "activeMs": 3,
-      "totalMs": 0
+      "activeMs": 15,
+      "totalMs": 0,
+      "batchSize": 0,
+      "avgMsPerBatch": 0,
+      "throughput": 0,
+      "queueRemaining": 0
     },
     {
       "workerId": 3,
       "dirsProcessed": 1,
       "filesConverted": 0,
-      "activeMs": 3,
-      "totalMs": 0
+      "activeMs": 19,
+      "totalMs": 0,
+      "batchSize": 0,
+      "avgMsPerBatch": 0,
+      "throughput": 0,
+      "queueRemaining": 0
     },
     {
       "workerId": 4,
       "dirsProcessed": 1,
       "filesConverted": 0,
-      "activeMs": 4,
-      "totalMs": 0
+      "activeMs": 28,
+      "totalMs": 0,
+      "batchSize": 0,
+      "avgMsPerBatch": 0,
+      "throughput": 0,
+      "queueRemaining": 0
     },
     {
       "workerId": 5,
       "dirsProcessed": 1,
       "filesConverted": 0,
-      "activeMs": 1,
-      "totalMs": 0
+      "activeMs": 5,
+      "totalMs": 0,
+      "batchSize": 0,
+      "avgMsPerBatch": 0,
+      "throughput": 0,
+      "queueRemaining": 0
     },
     {
       "workerId": 6,
       "dirsProcessed": 1,
-      "filesConverted": 2,
-      "activeMs": 55,
-      "totalMs": 0
+      "filesConverted": 0,
+      "activeMs": 116,
+      "totalMs": 0,
+      "batchSize": 0,
+      "avgMsPerBatch": 0,
+      "throughput": 0,
+      "queueRemaining": 0
     }
-  ]
+  ],
+  "summary": {
+    "avgBatchSize": 0,
+    "avgMsPerBatch": 0,
+    "avgThroughput": 0,
+    "totalActiveMs": 257,
+    "efficiency": 0,
+    "efficiencyLabel": "🐢 Low"
+  }
 }

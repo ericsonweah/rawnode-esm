@@ -1,215 +1,409 @@
-// worker.mjs — runs inside each worker thread for RawNode ESM converter
-import { parentPort } from "node:worker_threads";
-import fs from "node:fs";
-import path from "node:path";
+"use strict";
+
+// /src/worker.mjs — enterprise‑grade, non‑blocking worker for RawNode ESM converter
+// - Keeps { dir, dryRun } message contract and progress/done/error events.
+// - Fully async I/O; bounded concurrency; deterministic ordering; atomic writes.
+// - Cancellation + optional timeout support (see PROTOCOL+ comments).
+// - Preserves existing regex-based transforms & behaviors.
+
+import { parentPort, threadId } from "node:worker_threads";
+import { opendir, lstat, stat, readFile, writeFile, rename } from "node:fs/promises";
+import { constants as FS } from "node:fs";
+import { join, dirname as pathDirname, resolve as pathResolve, sep as PATH_SEP } from "node:path";
+import os from "node:os";
 import { performance } from "node:perf_hooks";
+import { setTimeout as sleep } from "node:timers/promises";
 
 /* ────────────────────────────────────────────────────────────────
- * Worker message handler
+ * Protocol
  * ──────────────────────────────────────────────────────────────── */
-parentPort.on("message", async ({ dir, dryRun }) => {
+const WORKER_PROTOCOL_V1 = 1;
+// Inbound:  { dir, dryRun, includeExts?, excludeNames?, concurrency?, timeoutMs? }
+// Outbound: progress | done | error
+// Cancel:   { type: 'cancel' }
+
+/* ────────────────────────────────────────────────────────────────
+ * Utilities
+ * ──────────────────────────────────────────────────────────────── */
+
+const toPosix = (p) => p.split(PATH_SEP).join("/");
+const byStablePath = (a, b) => toPosix(a).localeCompare(toPosix(b), "en");
+
+/** Minimal async pool with back‑pressure */
+class AsyncPool {
+    constructor(limit) {
+        this.limit = Math.max(1, limit | 0);
+        this.active = 0;
+        this.q = [];
+    }
+    schedule(fn) {
+        return new Promise((resolve, reject) => {
+            const run = async () => {
+                this.active++;
+                try {
+                    resolve(await fn());
+                } catch (e) {
+                    reject(e);
+                } finally {
+                    this.active--;
+                    if (this.q.length) this.q.shift()();
+                }
+            };
+            this.active < this.limit ? run() : this.q.push(run);
+        });
+    }
+}
+
+/** Atomic write using rename (same dir) + shebang preservation upstream */
+async function writeFileAtomic(path, data) {
+    const tmp = path + `.rawnode-esm.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
+    await writeFile(tmp, data);
+    await rename(tmp, path);
+}
+
+/** Deterministic, tolerant BFS directory walk with async I/O and skip rules */
+async function* walkBFS(root, { excludeNames = new Set(["node_modules", ".git"]) } = {}) {
+    const Q = [root];
+    while (Q.length) {
+        const dir = Q.shift();
+        let dh;
+        try {
+            dh = await opendir(dir);
+        } catch {
+            continue;
+        }
+        const entries = [];
+        for await (const ent of dh) entries.push(ent);
+        // sort: dirs first, then files; stable, locale‑fixed
+        entries.sort((a, b) => (a.isDirectory() === b.isDirectory() ? a.name.localeCompare(b.name, "en") : a.isDirectory() ? -1 : 1));
+        for (const ent of entries) {
+            const name = ent.name;
+            if (excludeNames.has(name)) continue;
+            const full = join(dir, name);
+            let st;
+            try {
+                st = await lstat(full);
+            } catch {
+                continue;
+            }
+            if (st.isSymbolicLink()) continue; // avoid cycles
+            if (st.isDirectory()) {
+                Q.push(full);
+                continue;
+            }
+            yield full;
+        }
+        // yield to keep the worker’s event loop responsive
+        await sleep(0);
+    }
+}
+
+/** Memoized file/directory checks */
+const statCache = new Map();
+async function isFile(p) {
+    const k = toPosix(p);
+    if (statCache.has(k)) return statCache.get(k) === 1;
+    try {
+        const st = await stat(p);
+        const v = st.isFile() ? 1 : 0;
+        statCache.set(k, v);
+        return v === 1;
+    } catch {
+        statCache.set(k, 0);
+        return false;
+    }
+}
+
+/** Async, conservative resolver for ./foo vs ./foo.js vs ./foo/index.js */
+function makeResolveImportPath() {
+    let calls = 0;
+    return async function resolveImportPath(mod, baseDir) {
+        const isRelative = mod.startsWith("./") || mod.startsWith("../");
+        if (!isRelative) return mod; // builtins or packages unchanged
+        const abs = pathResolve(baseDir, mod);
+        const filePath = `${abs}.js`;
+        const indexPath = join(abs, "index.js");
+        // micro‑yield every ~50 calls
+        if (++calls % 50 === 0) await Promise.resolve();
+        try {
+            if (await isFile(filePath)) return `${mod}.js`;
+            if (await isFile(indexPath)) return `${mod.replace(/\/$/, "")}/index.js`;
+            // default fallback (unchanged behavior)
+            return `${mod.replace(/\/$/, "")}/index.js`;
+        } catch {
+            return `${mod.replace(/\/$/, "")}/index.js`;
+        }
+    };
+}
+
+/** Lightweight scope detection (same as before, but factored) */
+function detectScopes(code) {
+    const ranges = [];
+    const stack = [];
+    const regex = /(function\s+\w*|constructor|class\s+\w+|\w+\s*\([^)]*\)\s*\{)/g;
+    let match;
+    while ((match = regex.exec(code))) {
+        const braceStart = code.indexOf("{", match.index);
+        if (braceStart !== -1) stack.push({ start: braceStart, depth: 1 });
+    }
+    for (let i = 0; i < code.length; i++) {
+        const c = code[i];
+        if (c === "{") stack.forEach((s) => (s.depth += 1));
+        else if (c === "}") {
+            for (const s of stack) {
+                s.depth -= 1;
+                if (s.depth === 0 && !s.done) {
+                    ranges.push([s.start, i]);
+                    s.done = true;
+                }
+            }
+        }
+    }
+    return ranges;
+}
+const isInside = (i, scopes) => scopes.some(([s, e]) => i > s && i < e);
+
+/** Async replace helper for regex with async replacer */
+async function replaceAsyncAll(src, re, replacer) {
+    re.lastIndex = 0;
+    let out = "",
+        last = 0,
+        m;
+    while ((m = re.exec(src))) {
+        out += src.slice(last, m.index) + (await replacer(m, m.index, src));
+        last = m.index + m[0].length;
+    }
+    out += src.slice(last);
+    return out;
+}
+
+/* ────────────────────────────────────────────────────────────────
+ * Core transform (preserves your original logic & ordering)
+ * ──────────────────────────────────────────────────────────────── */
+async function transformFile(originalCode, absPath) {
+    let code = originalCode;
+    const baseDir = pathDirname(absPath);
+    const scopes = detectScopes(code);
+    const topLevelImports = [];
+    const seenImports = new Set();
+    const resolveImportPath = makeResolveImportPath();
+    let changed = false;
+
+    // require('mod')(args)
+    code = await replaceAsyncAll(code, /const\s+(\w+)\s*=\s*require\(['"]([^'"]+)['"]\)\(([^)]*)\);?/g, async (m, idx) => {
+        const [, name, mod, args] = m;
+        const imp = await resolveImportPath(mod, baseDir);
+        if (isInside(idx, scopes)) return `const ${name} = await (async()=> (await import("${imp}")).default(${args}))();`;
+        topLevelImports.push(`import tmp_${name} from "${imp}";`);
+        changed = true;
+        return `const ${name} = tmp_${name}(${args});`;
+    });
+
+    // require('mod').member or call
+    code = await replaceAsyncAll(code, /const\s+(\w+)\s*=\s*require\(['"]([^'"]+)['"]\)\.([A-Za-z$_][\w$]*)(\([^)]*\))?/g, async (m, idx) => {
+        const [, name, mod, member, call = ""] = m;
+        const imp = await resolveImportPath(mod, baseDir);
+        if (isInside(idx, scopes)) return `const ${name} = await (async()=> (await import("${imp}")).${member}${call})();`;
+        topLevelImports.push(`import * as __tmp_${name} from "${imp}";`);
+        changed = true;
+        return `const ${name} = __tmp_${name}.${member}${call};`;
+    });
+
+    // const x = require('mod')
+    code = await replaceAsyncAll(code, /const\s+(\w+)\s*=\s*require\(['"]([^'"]+)['"]\);?/g, async (m, idx) => {
+        const [, name, mod] = m;
+        const imp = await resolveImportPath(mod, baseDir);
+        if (isInside(idx, scopes)) return `const ${name} = await (async()=> await import("${imp}"))();`;
+        topLevelImports.push(`import ${name} from "${imp}";`);
+        changed = true;
+        return `// moved import for ${name}`;
+    });
+
+    // alias destructuring: const { promises: fs } = require("fs");
+    code = await replaceAsyncAll(code, /const\s*\{\s*([A-Za-z$_][\w$]*)\s*:\s*([A-Za-z$_][\w$]*)\s*\}\s*=\s*require\(['"]([^'"]+)['"]\);?/g, async (m, idx) => {
+        const [, member, alias, mod] = m;
+        const imp = await resolveImportPath(mod, baseDir);
+        if (isInside(idx, scopes)) return `const ${alias} = await (async()=> (await import("${imp}")).${member})()`;
+        topLevelImports.push(`import * as __tmp_${alias} from "${imp}";`);
+        changed = true;
+        return `// moved import for ${alias}\nconst ${alias} = __tmp_${alias}.${member};`;
+    });
+
+    // destructured require
+    code = await replaceAsyncAll(code, /const\s*\{\s*([^}]+)\s*\}\s*=\s*require\(['"]([^'"]+)['"]\);?/g, async (m, idx) => {
+        const [, names, mod] = m;
+        const imp = await resolveImportPath(mod, baseDir);
+        if (isInside(idx, scopes)) return `const { ${names.trim()} } = await (async()=> await import("${imp}"))();`;
+        topLevelImports.push(`import { ${names.trim()} } from "${imp}";`);
+        changed = true;
+        return `// moved import for { ${names.trim()} }`;
+    });
+
+    // module.exports / exports.*
+    let hasDefault = false;
+    code = code.replace(/module\.exports\s*=\s*([^;]+)/g, (_, rhs) => {
+        hasDefault = true;
+        changed = true;
+        return `export default ${rhs}`;
+    });
+    code = code.replace(/\bexports\.([A-Za-z$_][\w$]*)\s*=\s*(?!require)([^;\n]+)/g, (_, key, rhs) => {
+        changed = true;
+        return `export const ${key} = ${rhs}`;
+    });
+    code = code.replace(/\bmodule\.exports\.([A-Za-z$_][\w$]*)\s*=\s*([^;\n]+)/g, (_, key, rhs) => {
+        changed = true;
+        return hasDefault ? `export { ${rhs} as ${key} };` : `export const ${key} = ${rhs}`;
+    });
+
+    // dynamic require comment
+    code = code.replace(/\brequire\(([^)"']+)\)/g, (m) => `/* TODO dynamic require → await import(${m.slice(8, -1)}.js) */ ${m}`);
+
+    // Hoist top‑level imports uniquely; preserve shebang
+    if (topLevelImports.length) {
+        const uniq = topLevelImports.filter((t) => {
+            if (seenImports.has(t)) return false;
+            seenImports.add(t);
+            return true;
+        });
+        if (uniq.length) {
+            const shebang = code.startsWith("#!") ? code.split("\n", 1)[0] : null;
+            const body = shebang ? code.slice(shebang.length + 1) : code;
+            code = (shebang ? `${shebang}\n` : "") + `${uniq.join("\n")}\n\n` + body;
+        }
+    }
+
+    return { code, changed };
+}
+
+/* ────────────────────────────────────────────────────────────────
+ * replaceRequire(dir, dryRun) — orchestrator
+ * ──────────────────────────────────────────────────────────────── */
+async function replaceRequire(dir, dryRun, opts = {}) {
+    const includeExts = new Set((opts.includeExts ?? [".js"]).map((s) => s.toLowerCase()));
+    const excludeNames = new Set(opts.excludeNames ?? ["node_modules", ".git"]);
+    const concurrency = Math.max(1, Number(opts.concurrency ?? Math.min(32, os.cpus().length * 2)));
+    const progressEveryMs = Number(opts.progressEveryMs ?? 300);
+
+    const pool = new AsyncPool(concurrency);
+    const start = performance.now();
+    let lastEmit = 0;
+    let processed = 0;
+    let converted = 0;
+    let aborted = false;
+    let lastEmittedProcessed = 0; // for local throughput/latency estimation
+
+    const onCancel = (msg) => {
+        if (msg?.type === "cancel") aborted = true;
+    };
+    parentPort?.on("message", onCancel);
+
+    const files = [];
+    for await (const p of walkBFS(dir, { excludeNames })) {
+        // extension filter
+        const low = p.toLowerCase();
+        if ([...includeExts].some((ext) => low.endsWith(ext))) files.push(p);
+    }
+    // deterministic ordering
+    files.sort(byStablePath);
+
+    const promises = [];
+    for (const file of files) {
+        if (aborted) break;
+        promises.push(
+            pool.schedule(async () => {
+                try {
+                    const before = await readFile(file, "utf8");
+                    const { code, changed } = await transformFile(before, file);
+                    if (changed && !dryRun) await writeFileAtomic(file, code);
+                    if (changed) converted++;
+                } catch (e) {
+                    // per‑file errors do not crash the batch; report and continue
+                    parentPort?.postMessage({
+                        type: "error",
+                        dir,
+                        file,
+                        error: e?.message ?? String(e),
+                        stack: e?.stack,
+                    });
+                } finally {
+                    processed++;
+                    const now = performance.now();
+                    if (now - lastEmit >= progressEveryMs) {
+                        const elapsed = (now - start) / 1000;
+                        const throughput = processed / (elapsed + 1e-3);
+                        const deltaP = processed - lastEmittedProcessed;
+                        const deltaMs = Math.max(1, now - lastEmit);
+                        const localTps = deltaP > 0 ? deltaP / (deltaMs / 1000) : 0; // files/s in this slice
+                        const avgMsPerBatch = localTps > 0 ? (1000 / localTps) * concurrency : 0;
+
+                        parentPort?.postMessage({
+                            type: "progress",
+                            pid: process.pid,
+                            threadId,
+                            protocol: WORKER_PROTOCOL_V1,
+                            queueRemaining: Math.max(0, files.length - processed),
+                            processed,
+                            converted,
+                            throughput: Number((processed / ((now - start) / 1000 + 1e-3)).toFixed(1)),
+                            concurrency,
+                            // 🔁 Back-compat fields expected by run.mjs:
+                            batchSize: concurrency,
+                            avgMsPerBatch: Number(avgMsPerBatch.toFixed(2)),
+                        });
+                        lastEmittedProcessed = processed;
+
+                        lastEmit = now;
+                    }
+                }
+            })
+        );
+        // periodic cooperative yield to keep event loop fluid while scheduling
+        if (processed % 64 === 0) await Promise.resolve();
+    }
+
+    // Optional overall timeout
+    if (opts.timeoutMs && opts.timeoutMs > 0) {
+        const timeout = sleep(opts.timeoutMs, { ref: true }).then(() => {
+            throw new Error(`Worker timeout after ${opts.timeoutMs} ms`);
+        });
+        await Promise.race([Promise.all(promises), timeout]);
+    } else {
+        await Promise.all(promises);
+    }
+
+    parentPort?.off("message", onCancel);
+    if (aborted) return converted; // graceful early stop
+
+    return converted;
+}
+
+/* ────────────────────────────────────────────────────────────────
+ * Message handler
+ * ──────────────────────────────────────────────────────────────── */
+parentPort?.on("message", async (msg) => {
+    // Back‑compat shape: { dir, dryRun }
+    if (!msg || msg.type === "cancel") return; // cancel handled in replaceRequire
     const start = performance.now();
     try {
-        const converted = await replaceRequire(dir, dryRun);
+        const converted = await replaceRequire(msg.dir, !!msg.dryRun, {
+            includeExts: msg.includeExts,
+            excludeNames: msg.excludeNames,
+            concurrency: msg.concurrency,
+            timeoutMs: msg.timeoutMs,
+            progressEveryMs: msg.progressEveryMs,
+        });
         const durationMs = performance.now() - start;
-        parentPort.postMessage({ type: "done", dir, converted, durationMs });
+        parentPort?.postMessage({ type: "done", dir: msg.dir, converted, durationMs, protocol: WORKER_PROTOCOL_V1, threadId });
     } catch (err) {
         const durationMs = performance.now() - start;
-        parentPort.postMessage({
+        parentPort?.postMessage({
             type: "error",
-            dir,
+            dir: msg.dir,
             durationMs,
-            error: err.message,
-            stack: err.stack,
+            error: err?.message ?? String(err),
+            stack: err?.stack,
         });
     }
 });
 
-/* ────────────────────────────────────────────────────────────────
- * Conversion Logic (smart, scope-aware)
- * ──────────────────────────────────────────────────────────────── */
-async function replaceRequire(dir, dryRun) {
-    let count = 0;
-
-    // Helper: Resolve correct .js or index.js path
-    // UPDATED: smarter .js / index.js resolver with fallback (Case 1, Case 2, default→Case 2)
-    // UPDATED: smarter .js / index.js resolver with microtask-yield (Case 1, Case 2, default→Case 2)
-    function resolveImportPath(mod, baseDir) {
-        const isRelative = mod.startsWith("./") || mod.startsWith("../");
-        if (!isRelative) return mod; // Node builtins or external packages
-
-        const abs = path.resolve(baseDir, mod);
-        const filePath = `${abs}.js`;
-        const indexPath = path.join(abs, "index.js");
-
-        // Lightweight microtask yield every ~20 calls
-        if (!resolveImportPath._calls) resolveImportPath._calls = 0;
-        if (++resolveImportPath._calls % 20 === 0) {
-            const now = performance.now();
-            const p = Promise.resolve();
-            p.then(() => {
-                // microtask yields the worker thread briefly
-                if (performance.now() - now > 5) process.emitWarning("slow fs batch");
-            });
-        }
-
-        try {
-            if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
-                return `${mod}.js`; // Case 1
-            }
-            if (fs.existsSync(indexPath) && fs.statSync(indexPath).isFile()) {
-                return `${mod.replace(/\/$/, "")}/index.js`; // Case 2
-            }
-            // Default fallback → assume Case 2 when nothing found
-            return `${mod.replace(/\/$/, "")}/index.js`;
-        } catch {
-            // Graceful fallback on any fs error → Case 2
-            return `${mod.replace(/\/$/, "")}/index.js`;
-        }
-    }
-
-    // Detect function/class/constructor scopes for async import context
-    function detectScopes(code) {
-        const ranges = [];
-        const stack = [];
-        const regex = /(function\s+\w*|constructor|class\s+\w+|\w+\s*\([^)]*\)\s*\{)/g;
-        let match;
-        while ((match = regex.exec(code))) {
-            const braceStart = code.indexOf("{", match.index);
-            if (braceStart !== -1) stack.push({ start: braceStart, depth: 1 });
-        }
-        for (let i = 0; i < code.length; i++) {
-            const c = code[i];
-            if (c === "{") stack.forEach((s) => (s.depth += 1));
-            else if (c === "}") {
-                for (const s of stack) {
-                    s.depth -= 1;
-                    if (s.depth === 0 && !s.done) {
-                        ranges.push([s.start, i]);
-                        s.done = true;
-                    }
-                }
-            }
-        }
-        return ranges;
-    }
-    const isInside = (i, scopes) => scopes.some(([s, e]) => i > s && i < e);
-
-    // UPDATED: non-blocking directory walker using micro-task scheduling
-    function walk(dirPath) {
-        const queue = [dirPath];
-        let processed = 0;
-
-        // internal runner (iterative instead of deep recursion)
-        function processNext() {
-            // micro-batch: handle up to N directories before yielding
-            const BATCH_SIZE = 10;
-            let batch = 0;
-
-            while (queue.length && batch++ < BATCH_SIZE) {
-                const currentDir = queue.pop();
-                let files;
-                try {
-                    files = fs.readdirSync(currentDir);
-                } catch {
-                    continue; // skip unreadable directories
-                }
-
-                for (const file of files) {
-                    const full = path.join(currentDir, file);
-                    let stat;
-                    try {
-                        stat = fs.statSync(full);
-                    } catch {
-                        continue;
-                    }
-
-                    if (stat.isDirectory()) {
-                        queue.push(full);
-                        continue;
-                    }
-                    if (!file.endsWith(".js")) continue;
-
-                    processed++;
-                    // reuse your synchronous conversion logic verbatim ↓↓↓
-                    let code = fs.readFileSync(full, "utf8");
-                    const original = code;
-                    const baseDir = path.dirname(full);
-                    const scopes = detectScopes(code);
-                    const topLevelImports = [];
-                    const seenImports = new Set();
-
-                    // all your require→import replacements
-                    code = code.replace(/const\s+(\w+)\s*=\s*require\(['"]([^'"]+)['"]\)\(([^)]*)\);?/g, (m, name, mod, args, idx) => {
-                        const imp = resolveImportPath(mod, baseDir);
-                        if (isInside(idx, scopes)) return `const ${name} = await (async()=> (await import("${imp}")).default(${args}))();`;
-                        topLevelImports.push(`import tmp_${name} from "${imp}";`);
-                        return `const ${name} = tmp_${name}(${args});`;
-                    });
-
-                    code = code.replace(/const\s+(\w+)\s*=\s*require\(['"]([^'"]+)['"]\)\.([A-Za-z$_][\w$]*)(\([^)]*\))?/g, (m, name, mod, member, call = "", idx) => {
-                        const imp = resolveImportPath(mod, baseDir);
-                        if (isInside(idx, scopes)) return `const ${name} = await (async()=> (await import("${imp}")).${member}${call})();`;
-                        topLevelImports.push(`import * as __tmp_${name} from "${imp}";`);
-                        return `const ${name} = __tmp_${name}.${member}${call};`;
-                    });
-
-                    code = code.replace(/const\s+(\w+)\s*=\s*require\(['"]([^'"]+)['"]\);?/g, (m, name, mod, idx) => {
-                        const imp = resolveImportPath(mod, baseDir);
-                        if (isInside(idx, scopes)) return `const ${name} = await (async()=> await import("${imp}"))();`;
-                        topLevelImports.push(`import ${name} from "${imp}";`);
-                        return `// moved import for ${name}`;
-                    });
-
-                    code = code.replace(/const\s*\{\s*([A-Za-z$_][\w$]*)\s*:\s*([A-Za-z$_][\w$]*)\s*\}\s*=\s*require\(['"]([^'"]+)['"]\);?/g, (m, member, alias, mod, idx) => {
-                        const imp = resolveImportPath(mod, baseDir);
-                        if (isInside(idx, scopes)) return `const ${alias} = await (async()=> (await import("${imp}")).${member})()`;
-                        topLevelImports.push(`import * as __tmp_${alias} from "${imp}";`);
-                        return `// moved import for ${alias}\nconst ${alias} = __tmp_${alias}.${member};`;
-                    });
-
-                    code = code.replace(/const\s*\{\s*([^}]+)\s*\}\s*=\s*require\(['"]([^'"]+)['"]\);?/g, (m, names, mod, idx) => {
-                        const imp = resolveImportPath(mod, baseDir);
-                        if (isInside(idx, scopes)) return `const { ${names.trim()} } = await (async()=> await import("${imp}"))();`;
-                        topLevelImports.push(`import { ${names.trim()} } from "${imp}";`);
-                        return `// moved import for { ${names.trim()} }`;
-                    });
-
-                    let hasDefault = false;
-                    code = code.replace(/module\.exports\s*=\s*([^;]+)/g, (_, rhs) => {
-                        hasDefault = true;
-                        return `export default ${rhs}`;
-                    });
-                    code = code.replace(/\bexports\.([A-Za-z$_][\w$]*)\s*=\s*(?!require)([^;\n]+)/g, (_, key, rhs) => `export const ${key} = ${rhs}`);
-                    code = code.replace(/\bmodule\.exports\.([A-Za-z$_][\w$]*)\s*=\s*([^;\n]+)/g, (_, key, rhs) => (hasDefault ? `export { ${rhs} as ${key} };` : `export const ${key} = ${rhs}`));
-
-                    code = code.replace(/\brequire\(([^)"']+)\)/g, (m) => `/* TODO dynamic require → await import(${m.slice(8, -1)}.js) */ ${m}`);
-
-                    if (topLevelImports.length) {
-                        const unique = topLevelImports.filter((imp) => {
-                            if (seenImports.has(imp)) return false;
-                            seenImports.add(imp);
-                            return true;
-                        });
-                        code = `${unique.join("\n")}\n\n${code}`;
-                    }
-
-                    if (code !== original) {
-                        count++;
-                        if (!dryRun) fs.writeFileSync(full, code, "utf8");
-                    }
-                }
-            }
-
-            // yield control if queue not empty
-            if (queue.length) {
-                queueMicrotask(processNext);
-            }
-        }
-
-        processNext();
-    }
-
-    walk(dir);
-    return count;
-}
+export {}; // ESM marker

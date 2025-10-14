@@ -327,123 +327,35 @@ function finish() {
   }
 
   // ─────────────────────────────────────────────
-  // Optional: --report-summary
+  // NEW: Optional CLI flag --report-summary
   // ─────────────────────────────────────────────
   if (args.includes("--report-summary")) {
     console.log("");
     console.log(`${BOLD}${CYAN}📊 RAWNODE-ESM SUMMARY${RESET}`);
     console.log(`${DIM}───────────────────────────────${RESET}`);
     console.log(
-      `${DIM}Average Batch Size:${RESET}  ${GREEN}${summary.avgBatchSize.toFixed(1)}${RESET}`
+      `${DIM}Average Batch Size:${RESET}  ${GREEN}${summary.avgBatchSize.toFixed(
+        1
+      )}${RESET}`
     );
     console.log(
-      `${DIM}Average Latency:${RESET}     ${YELLOW}${summary.avgMsPerBatch.toFixed(2)} ms${RESET}`
+      `${DIM}Average Latency:${RESET}     ${YELLOW}${summary.avgMsPerBatch.toFixed(
+        2
+      )} ms${RESET}`
     );
     console.log(
-      `${DIM}Average Throughput:${RESET}  ${CYAN}${summary.avgThroughput.toFixed(1)} files/s${RESET}`
+      `${DIM}Average Throughput:${RESET}  ${CYAN}${summary.avgThroughput.toFixed(
+        1
+      )} files/s${RESET}`
     );
     console.log(
       `${DIM}Total Active Time:${RESET}   ${summary.totalActiveMs.toLocaleString()} ms`
     );
-    console.log(`${DIM}Efficiency Rating:${RESET}   ${summary.efficiencyLabel}`);
+    console.log(
+      `${DIM}Efficiency Rating:${RESET}   ${summary.efficiencyLabel}`
+    );
     console.log(`${DIM}───────────────────────────────${RESET}`);
     console.log("");
-  }
-
-  // ─────────────────────────────────────────────
-  // EXTENDED: Compare Mode (--compare report1.json report2.json [...])
-  //            + optional export (--export-trend [path])
-  // ─────────────────────────────────────────────
-  const compareIndex = args.indexOf("--compare");
-  if (compareIndex !== -1 && args.length > compareIndex + 1) {
-    const reportFiles = args.slice(compareIndex + 1).filter((f) => f.endsWith(".json"));
-    const exportTrendIndex = args.indexOf("--export-trend");
-    const exportTrendPath =
-      exportTrendIndex !== -1 && args[exportTrendIndex + 1] && !args[exportTrendIndex + 1].startsWith("--")
-        ? path.resolve(args[exportTrendIndex + 1])
-        : path.join(process.cwd(), "trend-report.json");
-
-    if (reportFiles.length < 2) {
-      console.error(`${RED}❌ Please provide at least two report files to compare.${RESET}`);
-    } else {
-      try {
-        const reports = reportFiles.map((f) => ({
-          name: path.basename(f),
-          data: JSON.parse(fs.readFileSync(f, "utf8")),
-        }));
-
-        const summaries = reports.map((r) => ({
-          file: r.name,
-          ...r.data.summary,
-        }));
-
-        const metrics = [
-          { key: "avgBatchSize", label: "Avg Batch" },
-          { key: "avgMsPerBatch", label: "Latency (ms)" },
-          { key: "avgThroughput", label: "Throughput (f/s)" },
-          { key: "efficiency", label: "Efficiency" },
-        ];
-
-        console.log("");
-        console.log(`${BOLD}${CYAN}📊 MULTI-RUN TREND ANALYSIS${RESET}`);
-        console.log(`${DIM}──────────────────────────────────────────────────────────${RESET}`);
-
-        const trendSummary = { timestamp: new Date().toISOString(), files: summaries.length, metrics: {} };
-
-        for (const { key, label } of metrics) {
-          const values = summaries.map((s) => s[key]).filter((v) => typeof v === "number");
-          const min = Math.min(...values);
-          const max = Math.max(...values);
-          const avg = values.reduce((a, v) => a + v, 0) / values.length;
-          const delta = ((max - min) / (min || 1)) * 100;
-
-          const trendColor = delta > 10 ? GREEN : delta < -10 ? RED : YELLOW;
-          console.log(
-            `${DIM}${label.padEnd(18)}${RESET}: min=${min.toFixed(2)}  max=${max.toFixed(
-              2
-            )}  avg=${avg.toFixed(2)}  ${trendColor}Δ=${delta.toFixed(2)}%${RESET}`
-          );
-
-          trendSummary.metrics[key] = {
-            label,
-            min: Number(min.toFixed(2)),
-            max: Number(max.toFixed(2)),
-            avg: Number(avg.toFixed(2)),
-            deltaPercent: Number(delta.toFixed(2)),
-          };
-        }
-
-        console.log(`${DIM}──────────────────────────────────────────────────────────${RESET}`);
-        const latest = summaries[summaries.length - 1];
-        const earliest = summaries[0];
-        const effDelta =
-          ((latest.efficiency - earliest.efficiency) / earliest.efficiency) * 100;
-        const resultLabel =
-          effDelta > 10
-            ? `${GREEN}▲ Improved`
-            : effDelta < -10
-            ? `${RED}▼ Regressed`
-            : `${YELLOW}≈ Stable`;
-
-        console.log(`${BOLD}${CYAN}Result:${RESET} ${resultLabel}${RESET}`);
-        console.log("");
-
-        // ─────────────────────────────────────────────
-        // NEW: Export trend report (optional path)
-        // ─────────────────────────────────────────────
-        if (exportTrendIndex !== -1) {
-          trendSummary.result = {
-            status: resultLabel.replace(/\x1b\[[0-9;]*m/g, ""), // strip ANSI colors
-            efficiencyDelta: Number(effDelta.toFixed(2)),
-          };
-          fs.mkdirSync(path.dirname(exportTrendPath), { recursive: true });
-          fs.writeFileSync(exportTrendPath, JSON.stringify(trendSummary, null, 2), "utf8");
-          console.log(`📊 Trend report exported → ${CYAN}${exportTrendPath}${RESET}`);
-        }
-      } catch (err) {
-        console.error(`${RED}❌ Comparison failed:${RESET} ${err.message}`);
-      }
-    }
   }
 
   console.log(
@@ -452,9 +364,6 @@ function finish() {
 
   process.exit(0);
 }
-
-
-
 
 
 /* ────────────────────────────────────────────────────────────────

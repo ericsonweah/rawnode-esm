@@ -352,17 +352,12 @@ function finish() {
 
   // ─────────────────────────────────────────────
   // EXTENDED: Compare Mode (--compare report1.json report2.json [...])
-  //            + optional export (--export-trend [path])
+  //            + optional export (--export-trend)
   // ─────────────────────────────────────────────
   const compareIndex = args.indexOf("--compare");
   if (compareIndex !== -1 && args.length > compareIndex + 1) {
     const reportFiles = args.slice(compareIndex + 1).filter((f) => f.endsWith(".json"));
-    const exportTrendIndex = args.indexOf("--export-trend");
-    const exportTrendPath =
-      exportTrendIndex !== -1 && args[exportTrendIndex + 1] && !args[exportTrendIndex + 1].startsWith("--")
-        ? path.resolve(args[exportTrendIndex + 1])
-        : path.join(process.cwd(), "trend-report.json");
-
+    const exportTrend = args.includes("--export-trend");
     if (reportFiles.length < 2) {
       console.error(`${RED}❌ Please provide at least two report files to compare.${RESET}`);
     } else {
@@ -429,16 +424,16 @@ function finish() {
         console.log("");
 
         // ─────────────────────────────────────────────
-        // NEW: Export trend report (optional path)
+        // NEW: Export trend report (for CI tracking)
         // ─────────────────────────────────────────────
-        if (exportTrendIndex !== -1) {
+        if (exportTrend) {
+          const exportPath = path.join(process.cwd(), "trend-report.json");
           trendSummary.result = {
             status: resultLabel.replace(/\x1b\[[0-9;]*m/g, ""), // strip ANSI colors
             efficiencyDelta: Number(effDelta.toFixed(2)),
           };
-          fs.mkdirSync(path.dirname(exportTrendPath), { recursive: true });
-          fs.writeFileSync(exportTrendPath, JSON.stringify(trendSummary, null, 2), "utf8");
-          console.log(`📊 Trend report exported → ${CYAN}${exportTrendPath}${RESET}`);
+          fs.writeFileSync(exportPath, JSON.stringify(trendSummary, null, 2), "utf8");
+          console.log(`📊 Trend report exported → ${CYAN}${exportPath}${RESET}`);
         }
       } catch (err) {
         console.error(`${RED}❌ Comparison failed:${RESET} ${err.message}`);
@@ -452,7 +447,6 @@ function finish() {
 
   process.exit(0);
 }
-
 
 
 
