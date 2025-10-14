@@ -1,4 +1,4 @@
-exports.log = (msg) => {
+export const log = (msg) => {
     console.log(msg);
 };
 

@@ -1,7 +1,12 @@
-const { EventEmitter } = require("events");
-const crypto = require("crypto"); // Ensure this is at the top of your file
-const fs = require("fs");
-const path = require("path");
+import crypto from "crypto";
+import fs from "fs";
+import path from "path";
+import { EventEmitter } from "events";
+
+// moved import for { EventEmitter }
+// moved import for crypto // Ensure this is at the top of your file
+// moved import for fs
+// moved import for path
 class Sample extends EventEmitter {
     constructor(...args) {
         super();
@@ -19,4 +24,4 @@ class Sample extends EventEmitter {
         if (!this.globalContext || typeof this.globalContext !== "object") this.globalContext = {};
     }
 }
-module.exports = Sample;
+export default Sample;

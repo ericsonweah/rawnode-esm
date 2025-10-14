@@ -1,0 +1,1 @@
+{"requires":[{"start":89,"end":104,"callee":"require","arg":"http","topLevel":true,"pattern":"assign","lhs":"http","idents":[]}],"exports":[],"uses":{"__dirname":false,"__filename":false,"requireResolve":[],"createRequire":false},"amd":false}

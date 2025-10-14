@@ -1,2 +1,2 @@
 // Configuration for locals
-module.exports = {};
+export default {};

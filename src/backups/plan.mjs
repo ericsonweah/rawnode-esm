@@ -23,15 +23,6 @@ export function planFile({ path, content, facts, analysis, risk, resolvePolicy, 
         return id;
     };
 
-    // add:
-    const EXT_RX = /\.(?:[cm]?js|json|node|wasm)$/i;
-    function withJsIfRelative(spec, risk) {
-        if (/^(?:\.{1,2}\/)/.test(spec) && !EXT_RX.test(spec)) {
-            return risk === "aggressive" ? `${spec}.js` : spec;
-        }
-        return spec;
-    }
-
     // __dirname/__filename
     if (facts.uses.__dirname || facts.uses.__filename) {
         topInsertions.push(
@@ -50,101 +41,16 @@ const require = __createRequire(import.meta.url);`
         );
     }
 
-    // Pass-through detection: const LHS = require('...'); module.exports = LHS;
-    let passThrough = null;
-    let exportSite = null;
-
-    for (const e of facts.exports) {
-        if (e.kind === "module.exports" && e.topLevel) {
-            exportSite = e;
-            break;
-        }
-    }
-
-    if (exportSite) {
-        const stmtEnd = findStmtEnd(content, exportSite.eqPos);
-        const rhs = content.slice(exportSite.eqPos, stmtEnd).trim();
-
-        for (const r of facts.requires) {
-            if (r.pattern === "assign" && r.topLevel && r.arg) {
-                // Try to capture simple LHS from source near the site start
-                const lineStart = (() => {
-                    let k = r.start;
-                    while (k > 0 && content[k - 1] !== "\n") k--;
-                    return k;
-                })();
-                // const line = content.slice(lineStart, r.end);
-                const line = content.slice(lineStart, r.start);
-                // const m = line.match(/(?:var|let|const)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*$/);
-                // const lhs = m ? m[1] : null;
-                const before = content.slice(Math.max(0, r.start - 128), r.start);
-                const m = before.match(/(?:^|\n)\s*(?:var|let|const)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*$/);
-                const lhs = m ? m[1] : null;
-
-                if (lhs && lhs === rhs) {
-                    passThrough = { r, lhs, exportSite, stmtEnd, lineStart };
-
-                    passThrough._skipRequireStart = r.start; // <— ensure per-site loop skips this site
-                    break;
-                }
-
-                if (passThrough && r.start === passThrough._skipRequireStart) continue;
-
-                // if (lhs && lhs === rhs) {
-                //     passThrough = { r, lhs, exportSite, stmtEnd, lineStart };
-                //     break;
-                // }
-            }
-        }
-    }
-
-    function isRelativeNoExt(s) {
-        return /^(?:\.{1,2}\/)/.test(s) && !/\.(?:[cm]?js|json|node|wasm)$/i.test(s);
-    }
-
-    if (passThrough) {
-        let spec = passThrough.r.arg;
-        if (isNodeCore(spec)) spec = toNodeSpecifier(spec);
-        if (isRelativeNoExt(spec)) spec = `${spec}.js`;
-
-        // Hoist a clean default import:
-        // decls.add(`import ${passThrough.lhs} from '${spec}';`);
-        // Hoist core as namespace, packages as default
-if (isNodeCore(passThrough.r.arg)) {
-    const sp = toNodeSpecifier(passThrough.r.arg);
-    decls.add(`import * as ${passThrough.lhs} from '${sp}';`);
-} else {
-    decls.add(`import ${passThrough.lhs} from '${spec}';`);
-}
-
-
-        // Remove the whole "const LHS = require(...)" statement:
-        const reqStmtEnd = findStmtEnd(content, passThrough.r.end);
-        edits.push({ start: passThrough.lineStart, end: reqStmtEnd, text: "", why: "pass-through fold", code: "CJS-PASS-THROUGH" });
-
-        // The normal export block below will rewrite "module.exports = LHS" → "export default LHS"
-    }
-
     // per-site
-    // for (const r of facts.requires) {
     for (const r of facts.requires) {
-        if (passThrough && r.start === passThrough._skipRequireStart) continue;
-
         if (r.callee === "require.resolve") continue; // shim handled
         if (!r.arg) {
             addWarning("CJS-DYN-REQUIRE", "Dynamic require cannot be converted safely.", "Use createRequire/import() manually.");
             continue;
         }
 
-        // let spec = r.arg;
-        // if (isNodeCore(spec)) spec = toNodeSpecifier(spec);
-
         let spec = r.arg;
         if (isNodeCore(spec)) spec = toNodeSpecifier(spec);
-        spec = withJsIfRelative(spec, risk);
-        if (/^(?:\.{1,2}\/)/.test(r.arg) && !/\.(?:[cm]?js|json|node|wasm)$/i.test(r.arg) && risk !== "aggressive") {
-            addWarning("CJS-REL-NOEXT", `Relative import '${r.arg}' lacks extension required by ESM.`, "Run with --risk aggressive or enable a plugin/policy to append '.js'.");
-        }
 
         // side-effect only
         if (r.pattern === "side-effect" && r.topLevel) {
@@ -162,43 +68,20 @@ if (isNodeCore(passThrough.r.arg)) {
         }
 
         // default-like assign
-        // at top of file (near other consts):
-        const CORE_DEFAULTABLE = new Set(["node:http"]); // Builtin CJS: default import yields the CJS object
-
-        // replace the 'assign' block with:
         if (r.pattern === "assign") {
-    if (isNodeCore(spec)) {
-        const ns = ensureNS(spec);                      // hoists: import * as __ns_node_http from 'node:http'
-        edits.push({ start: r.start, end: r.end, text: ns, why: "core-namespace", code: "CJS-ASSIGN-CORE-NS" });
-    } else if (risk === "aggressive") {
-        const id = `__tmp_${slug(spec)}`;
-        decls.add(`import ${id} from '${spec}';`);
-        edits.push({ start: r.start, end: r.end, text: id, why: "default-aggressive", code: "CJS-ASSIGN-DFLT" });
-    } else {
-        const ns = ensureNS(spec);                      // hoists namespace for packages too (safe)
-        edits.push({ start: r.start, end: r.end, text: `${ns}.default ?? ${ns}`, why: "interop", code: "CJS-ASSIGN-NS" });
-        addWarning("CJS-AMB-DEFAULT", `Using namespace interop for '${spec}'.`, "Use risk=aggressive to try default import when safe.");
-    }
-    continue;
-}
-
-        // if (r.pattern === "assign") {
-        //     if (CORE_DEFAULTABLE.has(spec)) {
-        //         const id = `__tmp_${slug(spec)}`;
-        //         decls.add(`import ${id} from '${spec}';`);
-        //         edits.push({ start: r.start, end: r.end, text: id, why: "core-default", code: "CJS-ASSIGN-CORE-DFLT" });
-        //         // note: no CJS-AMB-DEFAULT warning for this whitelisted core
-        //     } else if (risk === "aggressive" && !isNodeCore(spec)) {
-        //         const id = `__tmp_${slug(spec)}`;
-        //         decls.add(`import ${id} from '${spec}';`);
-        //         edits.push({ start: r.start, end: r.end, text: id, why: "default-aggressive", code: "CJS-ASSIGN-DFLT" });
-        //     } else {
-        //         const ns = ensureNS(spec);
-        //         edits.push({ start: r.start, end: r.end, text: `${ns}.default ?? ${ns}`, why: "interop", code: "CJS-ASSIGN-NS" });
-        //         addWarning("CJS-AMB-DEFAULT", `Using namespace interop for '${spec}'.`, "Use risk=aggressive to try default import when safe.");
-        //     }
-        //     continue;
-        // }
+            if (risk === "aggressive" && !isNodeCore(spec)) {
+                // Try default import; still safe for local files discovered to be default-shaped
+                decls.add(`import ${`__tmp_${slug(spec)}`} from '${spec}';`);
+                // Replace the whole require expression with the imported identifier:
+                const id = `__tmp_${slug(spec)}`;
+                edits.push({ start: r.start, end: r.end, text: id, why: "default-aggressive", code: "CJS-ASSIGN-DFLT" });
+            } else {
+                const ns = ensureNS(spec);
+                edits.push({ start: r.start, end: r.end, text: `${ns}.default ?? ${ns}`, why: "interop", code: "CJS-ASSIGN-NS" });
+                addWarning("CJS-AMB-DEFAULT", `Using namespace interop for '${spec}'.`, "Use risk=aggressive to try default import when safe.");
+            }
+            continue;
+        }
     }
 
     // exports: module.exports = <expr>;  →  export default <expr>;

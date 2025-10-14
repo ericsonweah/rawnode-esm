@@ -289,32 +289,18 @@ export function scanSource(src) {
             }
 
             // module.exports = ...
-            // module.exports = ...
-if (ident === "module") {
-  let j = i;
-  while (src[j] === " ") j++;
-  if (src[j] === "." && src.slice(j + 1, j + 8) === "exports") {
-    j += 8; // "." + "exports"
-    while (src[j] === " ") j++;
-    if (src[j] === "=") {
-      const topLevel = (brace === 0); // prefer brace-only top-level check
-      facts.exports.push({ kind: "module.exports", start, eqPos: j + 1, topLevel });
-    }
-  }
-}
-
-            // if (ident === "module") {
-            //     let j = i;
-            //     while (src[j] === " ") j++;
-            //     if (src[j] === "." && src.slice(j + 1, j + 8) === "exports") {
-            //         j += 8; // "." + "exports"
-            //         while (src[j] === " ") j++;
-            //         if (src[j] === "=") {
-            //             const topLevel = brace === 0;
-            //             facts.exports.push({ kind: "module.exports", start, eqPos: j + 1, topLevel });
-            //         }
-            //     }
-            // }
+            if (ident === "module") {
+                let j = i;
+                while (src[j] === " ") j++;
+                if (src[j] === "." && src.slice(j + 1, j + 8) === "exports") {
+                    j += 8; // "." + "exports"
+                    while (src[j] === " ") j++;
+                    if (src[j] === "=") {
+                        const topLevel = brace === 0 && funcDepth === 0;
+                        facts.exports.push({ kind: "module.exports", start, eqPos: j + 1, topLevel });
+                    }
+                }
+            }
 
             // exports.name = ...
             if (ident === "exports") {
@@ -327,8 +313,7 @@ if (ident === "module") {
                     const name = src.slice(nameStart, j);
                     while (src[j] === " ") j++;
                     if (src[j] === "=") {
-                        //const topLevel = brace === 0 && funcDepth === 0;
-                        const topLevel = brace === 0;
+                        const topLevel = brace === 0 && funcDepth === 0;
                         facts.exports.push({ kind: "exports.name", name, start, eqPos: j + 1, topLevel });
                     }
                 }

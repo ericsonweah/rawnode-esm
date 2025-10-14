@@ -1,0 +1,53 @@
+{
+  "timestamp": "2025-10-14T07:00:10.857Z",
+  "target": "/Users/ericsonweah/Sites/projects/javascript/node/core/rawnodemvc-documentation/src/core/modules/www.ericsonsweah.com/src/core/modules/rawnode-esm",
+  "dirsProcessed": 6,
+  "filesConverted": 4,
+  "dryRun": false,
+  "concurrency": 32,
+  "elapsedSeconds": 0.16,
+  "perWorkerStats": [
+    {
+      "workerId": 1,
+      "dirsProcessed": 1,
+      "filesConverted": 3,
+      "activeMs": 50,
+      "totalMs": 0
+    },
+    {
+      "workerId": 2,
+      "dirsProcessed": 1,
+      "filesConverted": 0,
+      "activeMs": 3,
+      "totalMs": 0
+    },
+    {
+      "workerId": 3,
+      "dirsProcessed": 1,
+      "filesConverted": 0,
+      "activeMs": 3,
+      "totalMs": 0
+    },
+    {
+      "workerId": 4,
+      "dirsProcessed": 1,
+      "filesConverted": 0,
+      "activeMs": 4,
+      "totalMs": 0
+    },
+    {
+      "workerId": 5,
+      "dirsProcessed": 1,
+      "filesConverted": 0,
+      "activeMs": 1,
+      "totalMs": 0
+    },
+    {
+      "workerId": 6,
+      "dirsProcessed": 1,
+      "filesConverted": 1,
+      "activeMs": 64,
+      "totalMs": 0
+    }
+  ]
+}

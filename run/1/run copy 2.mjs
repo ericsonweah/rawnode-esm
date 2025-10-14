@@ -1,0 +1,144 @@
+#!/usr/bin/env node
+// run.mjs — full recursive worker pool RawNode ESM converter (with live counter)
+
+import { Worker } from "node:worker_threads";
+import { cpus } from "node:os";
+import fs from "node:fs";
+import path from "node:path";
+import { performance } from "node:perf_hooks";
+
+/* ────────────────────────────────────────────────────────────────
+ * CLI FLAGS
+ * ──────────────────────────────────────────────────────────────── */
+const args = process.argv.slice(2);
+const dryRun = args.includes("--dry-run");
+const targetIndex = args.indexOf("--target");
+const concurrencyIndex = args.indexOf("--concurrency");
+
+const targetDir =
+  targetIndex !== -1 && args[targetIndex + 1]
+    ? path.resolve(args[targetIndex + 1])
+    : path.resolve("./src");
+
+const concurrency =
+  concurrencyIndex !== -1 && args[concurrencyIndex + 1]
+    ? Math.max(1, Number(args[concurrencyIndex + 1]))
+    : Math.max(1, Math.floor(cpus().length / 2));
+
+console.log(
+  `🚀 Starting RawNode ESM conversion\n` +
+    `Target: ${targetDir}\n` +
+    `Concurrency: ${concurrency}\n` +
+    (dryRun ? "Mode: 🔍 Dry-run (no writes)\n" : "Mode: ✍️  Write in-place\n")
+);
+
+/* ────────────────────────────────────────────────────────────────
+ * DISCOVER ALL DIRECTORIES RECURSIVELY
+ * ──────────────────────────────────────────────────────────────── */
+function discoverAllDirs(root, out = []) {
+  try {
+    const entries = fs.readdirSync(root, { withFileTypes: true });
+    let hasJS = false;
+    for (const entry of entries) {
+      const full = path.join(root, entry.name);
+      if (entry.isDirectory()) {
+        discoverAllDirs(full, out);
+      } else if (entry.isFile() && entry.name.endsWith(".js")) {
+        hasJS = true;
+      }
+    }
+    if (hasJS) out.push(root);
+  } catch (err) {
+    console.warn(`⚠️  [skip] Cannot read ${root}: ${err.message}`);
+  }
+  return out;
+}
+
+const dirs = discoverAllDirs(targetDir);
+if (dirs.length === 0) {
+  console.log("⚠️  No .js files found anywhere under target path.");
+  process.exit(0);
+}
+
+let nextJob = 0;
+let completed = 0;
+let totalFiles = 0;
+const start = performance.now();
+
+/* ────────────────────────────────────────────────────────────────
+ * WORKER POOL MANAGEMENT
+ * ──────────────────────────────────────────────────────────────── */
+const workers = [];
+
+function createWorker(id) {
+  const worker = new Worker(new URL("./worker.mjs", import.meta.url));
+  worker.idle = false;
+
+  worker.on("message", (msg) => {
+    switch (msg.type) {
+      case "log":
+        process.stdout.write(`🧵 Worker ${id} → ${msg.message}\n`);
+        break;
+
+      case "done":
+        completed++;
+        totalFiles += msg.converted;
+        const pct = ((completed / dirs.length) * 100).toFixed(1);
+        process.stdout.write(
+          `✅ Worker ${id} → done ${path.basename(msg.dir)} (${msg.converted} files)\n` +
+          `📊 Progress: ${completed}/${dirs.length} dirs | ${totalFiles} files converted (${pct}%)\n`
+        );
+        assignNext(worker, id);
+        break;
+
+      case "error":
+        process.stdout.write(`⚠️  Worker ${id} → error in ${msg.dir}: ${msg.error}\n`);
+        assignNext(worker, id);
+        break;
+    }
+  });
+
+  worker.on("exit", (code) => {
+    if (code !== 0)
+      console.error(`❌ Worker ${id} exited with code ${code}`);
+    if (workers.every((w) => w.idle)) finish();
+  });
+
+  return worker;
+}
+
+function assignNext(worker, id) {
+  if (nextJob >= dirs.length) {
+    worker.idle = true;
+    if (workers.every((w) => w.idle)) finish();
+    return;
+  }
+  const dir = dirs[nextJob++];
+  worker.idle = false;
+  worker.postMessage({ dir, dryRun });
+  process.stdout.write(`🧵 Worker ${id} → processing ${path.relative(process.cwd(), dir)}\n`);
+}
+
+function finish() {
+  const end = performance.now();
+  const elapsed = ((end - start) / 1000).toFixed(2);
+  console.log(
+    `\n🎉 All workers finished\n` +
+      `Modules processed: ${completed}\n` +
+      `Total files converted: ${totalFiles}\n` +
+      `Elapsed: ${elapsed}s\n`
+  );
+  process.exit(0);
+}
+
+/* ────────────────────────────────────────────────────────────────
+ * POOL INITIALIZATION
+ * ──────────────────────────────────────────────────────────────── */
+console.log(`🧩 Discovered ${dirs.length} directories containing JS files.\n`);
+
+for (let i = 0; i < Math.min(concurrency, dirs.length); i++) {
+  const worker = createWorker(i + 1);
+  workers.push(worker);
+}
+
+workers.forEach((w, i) => assignNext(w, i + 1));

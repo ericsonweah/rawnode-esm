@@ -248,40 +248,17 @@ export function scanSource(src) {
                         }
                     }
                     const end = j;
-                    //const topLevel = brace === 0 && funcDepth === 0;
-                    const topLevel = brace === 0;
-
+                    const topLevel = brace === 0 && funcDepth === 0;
                     // naive LHS detection: look behind a small window for '='
                     const before = src.slice(Math.max(0, start - 64), start);
                     const assigned = /=\s*$/.test(before) || /(?:var|let|const)\s+[A-Za-z_$][A-Za-z0-9_$]*\s*=\s*$/.test(before);
                     const destructured = /{[^}]*}\s*=\s*$/.test(before);
                     const sideEffect = !assigned && !destructured && topLevel;
 
-                    // const pattern = dotResolve ? "resolve" : staticArg ? (sideEffect ? "side-effect" : destructured ? "destructure" : "assign") : "dynamic";
-
                     const pattern = dotResolve ? "resolve" : staticArg ? (sideEffect ? "side-effect" : destructured ? "destructure" : "assign") : "dynamic";
 
-                    // naive LHS (simple cases): const Name = require('...')  OR  Name = require('...')
-                    let lhs = null;
-                    if (pattern === "assign") {
-                        const m = before.match(/(?:var|let|const)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*$/) || before.match(/([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*$/);
-                        if (m) lhs = m[1];
-                    }
-
-                    const site = {
-                        start,
-                        end,
-                        callee: dotResolve ? "require.resolve" : "require",
-                        arg: argStr,
-                        topLevel,
-                        pattern,
-                        lhs,
-                        idents: [],
-                    };
+                    const site = { start, end, callee: dotResolve ? "require.resolve" : "require", arg: argStr, topLevel, pattern, idents: [] };
                     facts.requires.push(site);
-
-                    // const site = { start, end, callee: dotResolve ? "require.resolve" : "require", arg: argStr, topLevel, pattern, idents: [] };
-                    // facts.requires.push(site);
                     i = j;
                     col += j - start;
                     continue;
@@ -289,32 +266,18 @@ export function scanSource(src) {
             }
 
             // module.exports = ...
-            // module.exports = ...
-if (ident === "module") {
-  let j = i;
-  while (src[j] === " ") j++;
-  if (src[j] === "." && src.slice(j + 1, j + 8) === "exports") {
-    j += 8; // "." + "exports"
-    while (src[j] === " ") j++;
-    if (src[j] === "=") {
-      const topLevel = (brace === 0); // prefer brace-only top-level check
-      facts.exports.push({ kind: "module.exports", start, eqPos: j + 1, topLevel });
-    }
-  }
-}
-
-            // if (ident === "module") {
-            //     let j = i;
-            //     while (src[j] === " ") j++;
-            //     if (src[j] === "." && src.slice(j + 1, j + 8) === "exports") {
-            //         j += 8; // "." + "exports"
-            //         while (src[j] === " ") j++;
-            //         if (src[j] === "=") {
-            //             const topLevel = brace === 0;
-            //             facts.exports.push({ kind: "module.exports", start, eqPos: j + 1, topLevel });
-            //         }
-            //     }
-            // }
+            if (ident === "module") {
+                let j = i;
+                while (src[j] === " ") j++;
+                if (src[j] === "." && src.slice(j + 1, j + 8) === "exports") {
+                    j += 8; // "." + "exports"
+                    while (src[j] === " ") j++;
+                    if (src[j] === "=") {
+                        const topLevel = brace === 0 && funcDepth === 0;
+                        facts.exports.push({ kind: "module.exports", start, eqPos: j + 1, topLevel });
+                    }
+                }
+            }
 
             // exports.name = ...
             if (ident === "exports") {
@@ -327,8 +290,7 @@ if (ident === "module") {
                     const name = src.slice(nameStart, j);
                     while (src[j] === " ") j++;
                     if (src[j] === "=") {
-                        //const topLevel = brace === 0 && funcDepth === 0;
-                        const topLevel = brace === 0;
+                        const topLevel = brace === 0 && funcDepth === 0;
                         facts.exports.push({ kind: "exports.name", name, start, eqPos: j + 1, topLevel });
                     }
                 }
