@@ -1,0 +1,47 @@
+{
+  "meta": {
+    "generatedAt": "2025-10-15T13:34:30.495Z",
+    "sourceDir": "/Users/ericsonweah/Sites/projects/javascript/node/core/rawnodemvc-documentation/src/core/modules/www.ericsonsweah.com/src/core/modules/rawnode-esm/out",
+    "reports": 1,
+    "okReports": 1,
+    "skippedReports": 0,
+    "metrics": [
+      "avgBatchSize",
+      "avgMsPerBatch",
+      "avgThroughput",
+      "efficiency"
+    ],
+    "concurrency": 8
+  },
+  "warnings": [],
+  "weeks": [
+    {
+      "week": "2025-W42",
+      "from": "2025-10-13T00:00:00.000Z",
+      "to": "2025-10-19T23:59:59.999Z",
+      "runs": 1,
+      "metrics": {
+        "avgBatchSize": {
+          "min": 0,
+          "max": 0,
+          "avg": 0
+        },
+        "avgMsPerBatch": {
+          "min": 0,
+          "max": 0,
+          "avg": 0
+        },
+        "avgThroughput": {
+          "min": 0,
+          "max": 0,
+          "avg": 0
+        },
+        "efficiency": {
+          "min": 0,
+          "max": 0,
+          "avg": 0
+        }
+      }
+    }
+  ]
+}

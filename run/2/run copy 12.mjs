@@ -251,8 +251,6 @@ function finish() {
     const n = Number(v);
     return Number.isFinite(n) ? Number(n.toFixed(digits)) : d;
   };
-    const NF = new Intl.NumberFormat('en-US'); // deterministic, locale-stable formatting
-
 
   const end = performance.now();
   const elapsed = ((end - start) / 1000).toFixed(2);
@@ -348,19 +346,18 @@ function finish() {
     console.log("");
     console.log(`${BOLD}${CYAN}📊 RAWNODE-ESM SUMMARY${RESET}`);
     console.log(`${DIM}───────────────────────────────${RESET}`);
-       console.log(
-      `${DIM}Average Batch Size:${RESET}  ${GREEN}${fix(summary.avgBatchSize, 1)}${RESET}`
+    console.log(
+      `${DIM}Average Batch Size:${RESET}  ${GREEN}${summary.avgBatchSize.toFixed(1)}${RESET}`
     );
     console.log(
-      `${DIM}Average Latency:${RESET}     ${YELLOW}${fix(summary.avgMsPerBatch, 2)} ms${RESET}`
+      `${DIM}Average Latency:${RESET}     ${YELLOW}${summary.avgMsPerBatch.toFixed(2)} ms${RESET}`
     );
     console.log(
-      `${DIM}Average Throughput:${RESET}  ${CYAN}${fix(summary.avgThroughput, 1)} files/s${RESET}`
+      `${DIM}Average Throughput:${RESET}  ${CYAN}${summary.avgThroughput.toFixed(1)} files/s${RESET}`
     );
     console.log(
-      `${DIM}Total Active Time:${RESET}   ${NF.format(num(summary.totalActiveMs))} ms`
+      `${DIM}Total Active Time:${RESET}   ${summary.totalActiveMs.toLocaleString()} ms`
     );
-
     console.log(`${DIM}Efficiency Rating:${RESET}   ${summary.efficiencyLabel}`);
     console.log(`${DIM}───────────────────────────────${RESET}`);
     console.log("");
@@ -462,10 +459,9 @@ function finish() {
     }
   }
 
-   console.log(
-    `📈 Summary → avg batch=${fix(summary.avgBatchSize, 2)}, avg throughput=${fix(summary.avgThroughput, 1)} f/s, efficiency=${summary.efficiencyLabel}`
+  console.log(
+    `📈 Summary → avg batch=${summary.avgBatchSize}, avg throughput=${summary.avgThroughput} f/s, efficiency=${summary.efficiencyLabel}`
   );
-
 
   process.exit(0);
 }
