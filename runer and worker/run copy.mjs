@@ -242,16 +242,6 @@ function assignNext(worker, id) {
  * FINALIZATION + REPORT
  * ──────────────────────────────────────────────────────────────── */
 function finish() {
-    // Defensive number helpers for JSON report (avoid NaN/undefined and preserve determinism)
-  const num = (v, d = 0) => {
-    const n = Number(v);
-    return Number.isFinite(n) ? n : d;
-  };
-  const fix = (v, digits, d = 0) => {
-    const n = Number(v);
-    return Number.isFinite(n) ? Number(n.toFixed(digits)) : d;
-  };
-
   const end = performance.now();
   const elapsed = ((end - start) / 1000).toFixed(2);
 
@@ -268,20 +258,17 @@ function finish() {
   // ─────────────────────────────────────────────
   // Prepare per-worker + summary telemetry
   // ─────────────────────────────────────────────
-
-    const perWorkerStats = Array.from(workerStats.values()).map((s = {}) => ({
-    workerId: s.workerId ?? 0,
-    dirsProcessed: num(s.dirsProcessed),
-    filesConverted: num(s.filesConverted),
-    activeMs: num(s.activeMs),
-    totalMs: num(s.totalMs),
-    batchSize: num(s.batchSize),
-    avgMsPerBatch: fix(s.avgMsPerBatch, 2),
-    throughput: fix(s.throughput, 1),
-    queueRemaining: num(s.queueRemaining),
+  const perWorkerStats = Array.from(workerStats.values()).map((s) => ({
+    workerId: s.workerId,
+    dirsProcessed: s.dirsProcessed,
+    filesConverted: s.filesConverted,
+    activeMs: Math.round(s.activeMs),
+    totalMs: Math.round(s.totalMs),
+    batchSize: s.batchSize,
+    avgMsPerBatch: Number(s.avgMsPerBatch?.toFixed?.(2) || 0),
+    throughput: Number(s.throughput?.toFixed?.(1) || 0),
+    queueRemaining: s.queueRemaining,
   }));
-
- 
 
   const avgBatchSize =
     perWorkerStats.reduce((a, s) => a + (s.batchSize || 0), 0) /
@@ -465,6 +452,9 @@ function finish() {
 
   process.exit(0);
 }
+
+
+
 
 
 /* ────────────────────────────────────────────────────────────────
