@@ -1,3 +1,9 @@
+import { createRequire as __createRequire } from 'node:module';
+const require = __createRequire(import.meta.url);
+import { fileURLToPath } from 'node:url';
+import { dirname as __dirname_fn } from 'node:path';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname  = __dirname_fn(__filename);
 import tmp_hash from "./modules/parser/utils/hash/index.js";
 import * as __tmp_raw from "node:fs";
 import fs from "node:fs";
@@ -39,7 +45,7 @@ import { Readable } from "node:stream";
 const workerAvail = (() => {
     // ADDED
     try {
-        require("node:worker_threads");
+        import "node:worker_threads";
         return true;
     } catch {
         return false;

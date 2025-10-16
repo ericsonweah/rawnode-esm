@@ -1,10 +1,10 @@
 {
   "meta": {
-    "generatedAt": "2025-10-16T12:20:19.792Z",
+    "generatedAt": "2025-10-16T09:52:12.423Z",
     "sourceDir": "/Users/ericsonweah/Sites/projects/javascript/node/core/rawnodemvc-documentation/src/core/modules/www.ericsonsweah.com/src/core/modules/rawnode-esm/out",
     "bucket": "week",
-    "reports": 2,
-    "okReports": 2,
+    "reports": 3,
+    "okReports": 3,
     "skippedReports": 0,
     "metrics": [
       "avgBatchSize",
@@ -12,7 +12,7 @@
       "avgThroughput",
       "efficiency"
     ],
-    "concurrency": 4
+    "concurrency": 8
   },
   "warnings": [],
   "periods": [
@@ -20,22 +20,22 @@
       "period": "2025-W42",
       "from": "2025-10-13T00:00:00.000Z",
       "to": "2025-10-19T23:59:59.999Z",
-      "runs": 2,
+      "runs": 3,
       "metrics": {
         "avgBatchSize": {
           "min": 0,
           "max": 24,
-          "avg": 12
+          "avg": 16
         },
         "avgMsPerBatch": {
           "min": 0,
-          "max": 8967.86,
-          "avg": 4483.93
+          "max": 9001.02,
+          "avg": 5989.63
         },
         "avgThroughput": {
           "min": 0,
           "max": 15.3,
-          "avg": 7.7
+          "avg": 10
         },
         "efficiency": {
           "min": 0,
@@ -50,22 +50,22 @@
       "period": "2025-W42",
       "from": "2025-10-13T00:00:00.000Z",
       "to": "2025-10-19T23:59:59.999Z",
-      "runs": 2,
+      "runs": 3,
       "metrics": {
         "avgBatchSize": {
           "min": 0,
           "max": 24,
-          "avg": 12
+          "avg": 16
         },
         "avgMsPerBatch": {
           "min": 0,
-          "max": 8967.86,
-          "avg": 4483.93
+          "max": 9001.02,
+          "avg": 5989.63
         },
         "avgThroughput": {
           "min": 0,
           "max": 15.3,
-          "avg": 7.7
+          "avg": 10
         },
         "efficiency": {
           "min": 0,

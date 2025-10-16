@@ -32,7 +32,7 @@ const { positionals, values } = parseArgs({
         quiet: { type: "boolean", default: false },
         help: { type: "boolean", default: false },
         "report-summary": { type: "boolean", default: false },
-        compare: { type: "string" }, // CSV; we also merge trailing args after --compare
+        compare: { type: "string" }, // space-separated after flag; handled later
         "export-trend": { type: "string" }, // optional path for trend export
     },
 });
@@ -41,14 +41,11 @@ const { positionals, values } = parseArgs({
 const debugWalk = !!values["debug-walk"];
 
 // Priority (deterministic):
-// 1) positionals (explicit)  2) --target  3) --targets (CSV)  4) fallback '.'
-const rootsRaw = positionals.length
-    ? positionals
-    : values.target
-    ? [values.target]
-    : values.targets
-    ? values.targets.split(",")
-    : ["."];
+// 1) positionals (explicit)
+// 2) --target
+// 3) --targets (CSV)
+// 4) fallback '.'
+const rootsRaw = positionals.length ? positionals : values.target ? [values.target] : values.targets ? values.targets.split(",") : ["."];
 
 // Resolve → dedupe → stable POSIX sort
 const roots = Array.from(
@@ -85,8 +82,7 @@ Common flags:
   --quiet                     Minimal console output
 
 Trend analysis:
-  --compare a.json b.json [c.json ...]  OR  --compare a.json,b.json
-  [--export-trend trend.json]
+  --compare a.json b.json [c.json ...] [--export-trend trend.json]
 `
     );
     process.exit(0);
@@ -130,6 +126,13 @@ const jsonReport = !!values["json-report"];
 let reportPath = values.report || path.resolve(process.cwd(), "report.json");
 if (reportPath.includes("%DATE%")) reportPath = reportPath.replace("%DATE%", timestamp());
 
+// Roots: positionals win, else --targets CSV, else legacy --target, else ./src
+const rootsArg = positionals.length ? positionals : values.targets ? listFromCSV(values.targets) : values.target ? [values.target] : ["./src"];
+
+// const roots = Array.from(new Set(rootsArg.map((r) => path.resolve(r)))).sort((a,b) =>
+//   a.split(path.sep).join("/").localeCompare(b.split(path.sep).join("/"), "en")
+// );
+
 const workerCount = Math.min(defaultWorkers, roots.length || 1);
 
 /* ────────────────────────────────────────────────────────────────
@@ -137,11 +140,7 @@ const workerCount = Math.min(defaultWorkers, roots.length || 1);
  * ──────────────────────────────────────────────────────────────── */
 if (!quiet) {
     console.log(
-        `🚀 Starting RawNode ESM conversion\n` +
-            `Roots: ${roots.join(", ")}\n` +
-            `Workers: ${workerCount}\n` +
-            (dryRun ? "Mode: 🔍 Dry-run (no writes)\n" : "Mode: ✍️  Write in-place\n") +
-            (jsonReport ? `Reporting: ${reportPath}\n` : "")
+        `🚀 Starting RawNode ESM conversion\n` + `Roots: ${roots.join(", ")}\n` + `Workers: ${workerCount}\n` + (dryRun ? "Mode: 🔍 Dry-run (no writes)\n" : "Mode: ✍️  Write in-place\n") + (jsonReport ? `Reporting: ${reportPath}\n` : "")
     );
 }
 
@@ -210,22 +209,11 @@ let nextJob = 0,
     totalConverted = 0,
     totalErrors = 0;
 
-// Bounded auto-respawn (per worker)
-const MAX_RESPAWNS = Math.max(0, Number(process.env.RAWNODE_ESM_RESPAWNS ?? 1));
-
-// Requeue store for directories whose worker crashed mid-flight
-const retryQueue = [];
-
-/** Take the next job deterministically: first from retryQueue, then from roots[nextJob]. */
-function takeNext() {
-    if (retryQueue.length) return retryQueue.shift();
-    if (nextJob >= roots.length) return null;
-    return roots[nextJob++];
-}
-
 const workers = [];
 const perWorker = new Map(); // id -> stats
 const perRoot = new Map(); // dir -> { converted, durationMs, errors }
+let progressTimer = null;       // for safe cleanup on finish()
+let finished = false;           // single-shot finish guard
 
 function renderProgress() {
     if (!isTTY || quiet) return;
@@ -267,7 +255,6 @@ function finalProgress() {
  * ──────────────────────────────────────────────────────────────── */
 function createWorker(id) {
     const worker = new Worker(new URL("./worker.mjs", import.meta.url));
-    worker.respawnsLeft = MAX_RESPAWNS;
     worker.idle = false;
     perWorker.set(id, {
         workerId: id,
@@ -281,7 +268,6 @@ function createWorker(id) {
         throughput: 0,
         queueRemaining: 0,
         lastProgress: performance.now(),
-        respawns: 0,
     });
 
     worker.on("message", (msg) => {
@@ -322,102 +308,41 @@ function createWorker(id) {
         }
     });
 
-    worker.on("exit", (code) => {
+        worker.on("error", (err) => {
+    totalErrors++;
+    if (!quiet) console.error(`${RED}❌ Worker ${id} error:${RESET} ${err?.message || err}`);
+    worker.idle = true;
+    if (workers.every((w) => w.idle)) finish();
+});
+
+    worker.on("exit", () => {
         const s = perWorker.get(id);
         if (s) s.totalMs = performance.now() - s.startTime;
-
-        const crashed = code !== 0 && !aborted;
-        if (crashed && worker.currentDir) {
-            retryQueue.push(worker.currentDir);
-            if (debugWalk) console.log(`${YELLOW}↺ [debug-walk] requeue${RESET} ${worker.currentDir} (W${id} exit ${code})`);
-        }
-
-        if (crashed) {
-            worker.respawnsLeft = typeof worker.respawnsLeft === "number" ? worker.respawnsLeft : MAX_RESPAWNS;
-            if (worker.respawnsLeft > 0) {
-                worker.respawnsLeft--;
-                if (s) s.respawns = (s.respawns || 0) + 1;
-                if (debugWalk) console.log(`${YELLOW}⟳ [debug-walk] respawn W${id}${RESET} (left=${worker.respawnsLeft})`);
-
-                const nw = new Worker(new URL("./worker.mjs", import.meta.url));
-                nw.respawnsLeft = worker.respawnsLeft;
-                nw.idle = false;
-                workers[id - 1] = nw;
-
-                nw.on("message", (msg) => {
-                    const s2 = perWorker.get(id);
-                    if (!s2) return;
-                    switch (msg.type) {
-                        case "progress":
-                            s2.batchSize = num(msg.batchSize);
-                            s2.avgMsPerBatch = fix(msg.avgMsPerBatch, 2);
-                            s2.throughput = fix(msg.throughput, 1);
-                            s2.queueRemaining = num(msg.queueRemaining);
-                            s2.lastProgress = performance.now();
-                            break;
-
-                        case "done": {
-                            completed++;
-                            totalConverted += num(msg.converted);
-                            s2.dirsProcessed++;
-                            s2.filesConverted += num(msg.converted);
-                            s2.activeMs += num(msg.durationMs);
-                            const r = perRoot.get(msg.dir) || { converted: 0, durationMs: 0, errors: 0 };
-                            r.converted += num(msg.converted);
-                            r.durationMs += num(msg.durationMs);
-                            perRoot.set(msg.dir, r);
-                            assignNext(nw, id);
-                            renderProgress();
-                            break;
-                        }
-
-                        case "error": {
-                            totalErrors++;
-                            const r = perRoot.get(msg.dir) || { converted: 0, durationMs: 0, errors: 0 };
-                            r.errors++;
-                            perRoot.set(msg.dir, r);
-                            assignNext(nw, id);
-                            break;
-                        }
-                    }
-                });
-
-                nw.on("exit", (code2) => {
-                    const s3 = perWorker.get(id);
-                    if (s3) s3.totalMs = performance.now() - s3.startTime;
-
-                    const crashed2 = code2 !== 0 && !aborted;
-                    if (crashed2 && nw.currentDir) {
-                        retryQueue.push(nw.currentDir);
-                        if (debugWalk) console.log(`${YELLOW}↺ [debug-walk] requeue${RESET} ${nw.currentDir} (W${id} exit ${code2})`);
-                    }
-                    nw.idle = true;
-                    if (workers.every((w) => w.idle)) finish();
-                });
-
-                assignNext(nw, id);
-                return;
-            }
-        }
-
         worker.idle = true;
         if (workers.every((w) => w.idle)) finish();
     });
+
+
+
 
     return worker;
 }
 
 function assignNext(worker, id) {
-    const dir = takeNext();
-    if (!dir) {
+      if (aborted) {
         worker.idle = true;
         if (workers.every((w) => w.idle)) finish();
         return;
     }
+    if (nextJob >= roots.length) {
+        worker.idle = true;
+        if (workers.every((w) => w.idle)) finish();
+        return;
+    }
+    const dir = roots[nextJob++];
     worker.idle = false;
-    worker.currentDir = dir;
-    if (debugWalk) console.log(`${DIM}→ [debug-walk] job${RESET} W${id}: ${dir}`);
     perRoot.set(dir, perRoot.get(dir) || { converted: 0, durationMs: 0, errors: 0 });
+     if (debugWalk && !quiet) console.log(`${DIM}→ assign${RESET} W${id} ${dir}`);
     worker.postMessage({
         dir,
         dryRun,
@@ -433,18 +358,15 @@ function assignNext(worker, id) {
  * Finish + report
  * ──────────────────────────────────────────────────────────────── */
 async function finish() {
+      if (finished) return;
+    finished = true;
+    if (progressTimer) { clearInterval(progressTimer); progressTimer = null; }
     const end = performance.now();
     const elapsedSec = Number(((end - start) / 1000).toFixed(2));
 
     if (!quiet && !aborted) finalProgress();
 
-    console.log(
-        `\n${aborted ? "🛑 Aborted" : "🎉 All workers finished"}\n` +
-            `Roots processed: ${completed}/${roots.length}\n` +
-            `Total files converted: ${totalConverted}\n` +
-            `Errors: ${totalErrors}\n` +
-            `Elapsed: ${elapsedSec}s\n`
-    );
+    console.log(`\n${aborted ? "🛑 Aborted" : "🎉 All workers finished"}\n` + `Roots processed: ${completed}/${roots.length}\n` + `Total files converted: ${totalConverted}\n` + `Errors: ${totalErrors}\n` + `Elapsed: ${elapsedSec}s\n`);
 
     const perWorkerStats = Array.from(perWorker.values()).map((s = {}) => ({
         workerId: s.workerId ?? 0,
@@ -456,7 +378,6 @@ async function finish() {
         avgMsPerBatch: fix(s.avgMsPerBatch, 2),
         throughput: fix(s.throughput, 1),
         queueRemaining: num(s.queueRemaining),
-        respawns: num(s.respawns),
     }));
 
     const avgBatchSize = fix(perWorkerStats.reduce((a, s) => a + (s.batchSize || 0), 0) / Math.max(perWorkerStats.length, 1), 2);
@@ -507,64 +428,63 @@ async function finish() {
         console.log(`${DIM}───────────────────────────────${RESET}\n`);
     }
 
-    // Trend analysis (CSV + trailing args after --compare)
-    const compareCsv = listFromCSV(values.compare || "");
-    const argIdx = process.argv.indexOf("--compare");
-    const afterFlag = argIdx !== -1 ? process.argv.slice(argIdx + 1).filter((s) => !s.startsWith("--")) : [];
-    const compareFiles = Array.from(new Set([...compareCsv, ...afterFlag])).filter((f) => f.endsWith(".json"));
-
-    if (compareFiles.length >= 2) {
+    // Trend analysis
+    const compareIdx = process.argv.indexOf("--compare");
+    if (compareIdx !== -1 && process.argv.length > compareIdx + 1) {
         try {
-            const reports = await Promise.all(compareFiles.map(async (f) => ({ name: path.basename(f), data: JSON.parse(await readFile(f, "utf8")) })));
-            const summaries = reports.map((r) => ({ file: r.name, ...r.data.summary }));
+            const files = process.argv.slice(compareIdx + 1).filter((f) => f.endsWith(".json"));
+            if (files.length < 2) {
+                console.error(`${RED}❌ Please provide at least two report files to compare.${RESET}`);
+            } else {
+                const reports = await Promise.all(files.map(async (f) => ({ name: path.basename(f), data: JSON.parse(await readFile(f, "utf8")) })));
+                const summaries = reports.map((r) => ({ file: r.name, ...r.data.summary }));
 
-            const metrics = [
-                { key: "avgBatchSize", label: "Avg Batch" },
-                { key: "avgMsPerBatch", label: "Latency (ms)" },
-                { key: "avgThroughput", label: "Throughput (f/s)" },
-                { key: "efficiency", label: "Efficiency" },
-            ];
+                const metrics = [
+                    { key: "avgBatchSize", label: "Avg Batch" },
+                    { key: "avgMsPerBatch", label: "Latency (ms)" },
+                    { key: "avgThroughput", label: "Throughput (f/s)" },
+                    { key: "efficiency", label: "Efficiency" },
+                ];
 
-            console.log("");
-            console.log(`${BOLD}${CYAN}📊 MULTI-RUN TREND ANALYSIS${RESET}`);
-            console.log(`${DIM}──────────────────────────────────────────────────────────${RESET}`);
+                console.log("");
+                console.log(`${BOLD}${CYAN}📊 MULTI-RUN TREND ANALYSIS${RESET}`);
+                console.log(`${DIM}──────────────────────────────────────────────────────────${RESET}`);
 
-            const trendSummary = { timestamp: new Date().toISOString(), files: summaries.length, metrics: {} };
+                const trendSummary = { timestamp: new Date().toISOString(), files: summaries.length, metrics: {} };
 
-            for (const { key, label } of metrics) {
-                const valuesNum = summaries.map((s) => s[key]).filter((v) => typeof v === "number");
-                const min = Math.min(...valuesNum),
-                    max = Math.max(...valuesNum);
-                const avg = valuesNum.reduce((a, v) => a + v, 0) / valuesNum.length || 0;
-                const delta = ((max - (min || 1)) / (min || 1)) * 100;
-                const trendColor = delta > 10 ? GREEN : delta < -10 ? RED : YELLOW;
-                console.log(`${DIM}${label.padEnd(18)}${RESET}: min=${min.toFixed(2)}  max=${max.toFixed(2)}  avg=${avg.toFixed(2)}  ${trendColor}Δ=${delta.toFixed(2)}%${RESET}`);
-                trendSummary.metrics[key] = { label, min: Number(min.toFixed(2)), max: Number(max.toFixed(2)), avg: Number(avg.toFixed(2)), deltaPercent: Number(delta.toFixed(2)) };
-            }
-            console.log(`${DIM}──────────────────────────────────────────────────────────${RESET}`);
+                for (const { key, label } of metrics) {
+                    const valuesNum = summaries.map((s) => s[key]).filter((v) => typeof v === "number");
+                    const min = Math.min(...valuesNum),
+                        max = Math.max(...valuesNum);
+                    const avg = valuesNum.reduce((a, v) => a + v, 0) / valuesNum.length || 0;
+                    const delta = ((max - (min || 1)) / (min || 1)) * 100;
+                    const trendColor = delta > 10 ? GREEN : delta < -10 ? RED : YELLOW;
+                    console.log(`${DIM}${label.padEnd(18)}${RESET}: min=${min.toFixed(2)}  max=${max.toFixed(2)}  avg=${avg.toFixed(2)}  ${trendColor}Δ=${delta.toFixed(2)}%${RESET}`);
+                    trendSummary.metrics[key] = { label, min: Number(min.toFixed(2)), max: Number(max.toFixed(2)), avg: Number(avg.toFixed(2)), deltaPercent: Number(delta.toFixed(2)) };
+                }
+                console.log(`${DIM}──────────────────────────────────────────────────────────${RESET}`);
 
-            const latest = summaries[summaries.length - 1];
-            const earliest = summaries[0];
-            const effDelta = ((latest.efficiency - earliest.efficiency) / Math.max(earliest.efficiency, 1e-6)) * 100;
-            const resultLabel = effDelta > 10 ? `${GREEN}▲ Improved` : effDelta < -10 ? `${RED}▼ Regressed` : `${YELLOW}≈ Stable`;
-            console.log(`${BOLD}${CYAN}Result:${RESET} ${resultLabel}${RESET}\n`);
+                const latest = summaries[summaries.length - 1];
+                const earliest = summaries[0];
+                const effDelta = ((latest.efficiency - earliest.efficiency) / Math.max(earliest.efficiency, 1e-6)) * 100;
+                const resultLabel = effDelta > 10 ? `${GREEN}▲ Improved` : effDelta < -10 ? `${RED}▼ Regressed` : `${YELLOW}≈ Stable`;
+                console.log(`${BOLD}${CYAN}Result:${RESET} ${resultLabel}${RESET}\n`);
 
-            const exportIdx = process.argv.indexOf("--export-trend");
-            if (exportIdx !== -1) {
-                const exportPath = process.argv[exportIdx + 1] && !process.argv[exportIdx + 1].startsWith("--") ? path.resolve(process.argv[exportIdx + 1]) : path.join(process.cwd(), "trend-report.json");
-                const trendSummaryObj = {
-                    ...trendSummary,
-                    result: { status: resultLabel.replace(/\x1b\[[0-9;]*m/g, ""), efficiencyDelta: Number(effDelta.toFixed(2)) },
-                };
-                await mkdir(path.dirname(exportPath), { recursive: true });
-                await writeFile(exportPath, JSON.stringify(trendSummaryObj, null, 2), "utf8");
-                console.log(`📊 Trend report exported → ${CYAN}${exportPath}${RESET}`);
+                const exportIdx = process.argv.indexOf("--export-trend");
+                if (exportIdx !== -1) {
+                    const exportPath = process.argv[exportIdx + 1] && !process.argv[exportIdx + 1].startsWith("--") ? path.resolve(process.argv[exportIdx + 1]) : path.join(process.cwd(), "trend-report.json");
+                    trendSummary.result = {
+                        status: resultLabel.replace(/\x1b\[[0-9;]*m/g, ""),
+                        efficiencyDelta: Number(effDelta.toFixed(2)),
+                    };
+                    await mkdir(path.dirname(exportPath), { recursive: true });
+                    await writeFile(exportPath, JSON.stringify(trendSummary, null, 2), "utf8");
+                    console.log(`📊 Trend report exported → ${CYAN}${exportPath}${RESET}`);
+                }
             }
         } catch (err) {
             console.error(`${RED}❌ Comparison failed:${RESET} ${err.message}`);
         }
-    } else if (compareCsv.length || afterFlag.length) {
-        console.error(`${RED}❌ Please provide at least two report files to compare.${RESET}`);
     }
 
     console.log(`📈 Summary → avg batch=${fix(summary.avgBatchSize, 2)}, avg throughput=${fix(summary.avgThroughput, 1)} f/s, efficiency=${summary.efficiencyLabel}`);
@@ -585,6 +505,13 @@ if (!quiet) {
     const ests = await Promise.all(validRoots.map((r) => countJsFiles(r).catch(() => 0)));
     const totalEst = ests.reduce((a, b) => a + b, 0);
     console.log(`🧩 ${validRoots.length} root(s); ~${totalEst} file(s) estimated.\n`);
+}
+
+
+// Low-noise, deterministic scheduling trace
+if (debugWalk && !quiet) {
+  console.log(`${DIM}🧭 Debug-walk:${RESET} scheduling roots in order:`);
+  for (const r of validRoots) console.log(`${DIM}  - ${RESET}${r}`);
 }
 
 for (let i = 0; i < Math.min(workerCount, validRoots.length); i++) {
@@ -612,5 +539,16 @@ if (isTTY && !quiet) {
     const interval = setInterval(() => {
         renderProgress();
         if (workers.every((w) => w.idle)) clearInterval(interval);
+    }, 200);
+}
+
+//if (!quiet) renderProgress();
+if (isTTY && !quiet) {
+    progressTimer = setInterval(() => {
+        renderProgress();
+        if (workers.every((w) => w.idle) && progressTimer) {
+            clearInterval(progressTimer);
+            progressTimer = null;
+        }
     }, 200);
 }

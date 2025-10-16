@@ -1,97 +1,51 @@
 {
   "schemaVersion": 1,
-  "timestamp": "2025-10-16T11:01:34.030Z",
-  "target": "/Users/ericsonweah/Sites/projects/javascript/node/core/rawnodemvc-documentation/src/core/modules/www.ericsonsweah.com/src/core/modules/rawnode-esm",
-  "dirsProcessed": 7,
-  "filesConverted": 3,
+  "timestamp": "2025-10-16T13:31:45.151Z",
+  "aborted": false,
+  "roots": [
+    "/Users/ericsonweah/Sites/projects/javascript/node/core/rawnodemvc-documentation/src/core/modules/www.ericsonsweah.com/src/core/modules/rawnode-esm"
+  ],
   "dryRun": false,
-  "concurrency": 32,
-  "elapsedSeconds": 0.29,
+  "workerCount": 1,
+  "workerConcurrency": null,
+  "includeExts": [
+    ".js"
+  ],
+  "excludeNames": [
+    "node_modules",
+    ".git"
+  ],
+  "elapsedSeconds": 0.34,
+  "totalFilesConverted": 1,
+  "totalErrors": 0,
   "perWorkerStats": [
     {
       "workerId": 1,
       "dirsProcessed": 1,
       "filesConverted": 1,
-      "activeMs": 95.24618299999997,
-      "totalMs": 0,
-      "batchSize": 0,
-      "avgMsPerBatch": 0,
-      "throughput": 0,
-      "queueRemaining": 0
-    },
-    {
-      "workerId": 2,
-      "dirsProcessed": 1,
-      "filesConverted": 1,
-      "activeMs": 155.30354699999998,
-      "totalMs": 0,
-      "batchSize": 0,
-      "avgMsPerBatch": 0,
-      "throughput": 0,
-      "queueRemaining": 0
-    },
-    {
-      "workerId": 3,
-      "dirsProcessed": 1,
-      "filesConverted": 0,
-      "activeMs": 20.06129100000001,
-      "totalMs": 0,
-      "batchSize": 0,
-      "avgMsPerBatch": 0,
-      "throughput": 0,
-      "queueRemaining": 0
-    },
-    {
-      "workerId": 4,
-      "dirsProcessed": 1,
-      "filesConverted": 0,
-      "activeMs": 19.095571000000007,
-      "totalMs": 0,
-      "batchSize": 0,
-      "avgMsPerBatch": 0,
-      "throughput": 0,
-      "queueRemaining": 0
-    },
-    {
-      "workerId": 5,
-      "dirsProcessed": 1,
-      "filesConverted": 0,
-      "activeMs": 33.349243,
-      "totalMs": 0,
-      "batchSize": 0,
-      "avgMsPerBatch": 0,
-      "throughput": 0,
-      "queueRemaining": 0
-    },
-    {
-      "workerId": 6,
-      "dirsProcessed": 1,
-      "filesConverted": 0,
-      "activeMs": 4.934219000000013,
-      "totalMs": 0,
-      "batchSize": 0,
-      "avgMsPerBatch": 0,
-      "throughput": 0,
-      "queueRemaining": 0
-    },
-    {
-      "workerId": 7,
-      "dirsProcessed": 1,
-      "filesConverted": 1,
-      "activeMs": 200.818361,
+      "activeMs": 229.90201599999995,
       "totalMs": 0,
       "batchSize": 24,
-      "avgMsPerBatch": 333.08,
-      "throughput": 134,
-      "queueRemaining": 3
+      "avgMsPerBatch": 12369.81,
+      "throughput": 10.9,
+      "queueRemaining": 25,
+      "respawns": 0
+    }
+  ],
+  "perRoot": [
+    {
+      "dir": "/Users/ericsonweah/Sites/projects/javascript/node/core/rawnodemvc-documentation/src/core/modules/www.ericsonsweah.com/src/core/modules/rawnode-esm",
+      "converted": 1,
+      "durationMs": 229.90201599999995,
+      "errors": 0
     }
   ],
   "summary": {
-    "avgBatchSize": 3.43,
-    "avgMsPerBatch": 47.58,
-    "avgThroughput": 19.1,
-    "totalActiveMs": 528.808415,
-    "efficiency": 5.67,
+    "avgBatchSize": 24,
+    "avgMsPerBatch": 12369.81,
+    "avgThroughput": 10.9,
+    "totalActiveMs": 229.90201599999995,
+    "efficiency": 4.35,
     "efficiencyLabel": "🐢 Low"
   }
 }
