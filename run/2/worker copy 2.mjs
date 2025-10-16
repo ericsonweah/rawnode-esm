@@ -55,26 +55,6 @@ class AsyncPool {
 }
 
 /** Atomic write using rename (same dir) + shebang preservation upstream */
-
-// Idempotent "createRequire" shim injector for ESM files that still use require()
-function insertRequireShimIfNeeded(code) {
-  // already present?
-  if (/\bcreateRequire\s+as\s+__createRequire\b/.test(code) || /\b__createRequire\(/.test(code)) return code;
-  if (!/\brequire\s*\(/.test(code)) return code; // nothing left that needs the shim
-
-  const header =
-`import { createRequire as __createRequire } from 'node:module';
-const require = __createRequire(import.meta.url);
-`;
-
-  // preserve a shebang if present; otherwise insert at top
-  if (code.startsWith('#!')) {
-    const nl = code.indexOf('\n');
-    if (nl > -1) return code.slice(0, nl + 1) + header + code.slice(nl + 1);
-  }
-  return header + code;
-}
-
 async function writeFileAtomic(path, data) {
     const tmp = path + `.rawnode-esm.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
     await writeFile(tmp, data);
@@ -230,18 +210,6 @@ async function transformFile(originalCode, absPath) {
     });
 
     // const x = require('mod')
-    // bare assignment: foo = require('mod')
-// We intentionally do NOT hoist this (it often lives in try/catch for optional deps).
-// We just mark that a shim will be required.
-let __needsRequireShim = false;
-code = code.replace(
-  /(^|[^\w$])([A-Za-z_$][\w$]*)\s*=\s*require\(\s*(['"])([^'"]+)\3\s*\)\s*;?/gm,
-  (m, pre, name, q, spec) => {
-    __needsRequireShim = true;
-    return m; // semantics preserved; shim will be injected below
-  }
-);
-
     code = await replaceAsyncAll(code, /const\s+(\w+)\s*=\s*require\(['"]([^'"]+)['"]\);?/g, async (m, idx) => {
         const [, name, mod] = m;
         const imp = await resolveImportPath(mod, baseDir);

@@ -134,43 +134,19 @@ function renderProgress() {
     let output = `📊 ${bar} ${BOLD}${(pct * 100).toFixed(1)}%${RESET}` + ` | ${totalFiles} files | ${completedDirs}/${dirs.length} dirs` + ` | ⚡ ${throughput} f/s | ETA ~${remaining}s\n`;
 
     // UPDATED: add per-worker adaptive stats
-    const num = (v, d = 0) => Number.isFinite(Number(v)) ? Number(v) : d;
-const fix = (v, digits = 1, d = 0) =>
-  Number.isFinite(Number(v)) ? Number(Number(v).toFixed(digits)) : d;
-
-const workersInfo = Array.from(workerStats.values())
-  .map((s = {}) => {
-    const last = Number.isFinite(s.lastProgress) ? s.lastProgress : 0;
-    const ageSec = (performance.now() - last) / 1000;
-    const age = fix(ageSec, 1, 0).toFixed(1);
-    const alive = ageSec < 2 ? GREEN : DIM;
-    const bsz  = String(num(s.batchSize, 0)).padEnd(3);
-    const ams  = String(fix(s.avgMsPerBatch, 1, 0)).padStart(4);
-    const tps  = String(fix(s.throughput, 0, 0)).padStart(4);
-    const qrem = String(num(s.queueRemaining, 0)).padStart(4);
-    return (
-      `${alive}W${s.workerId ?? 0}${RESET} ` +
-      `${DIM}b=${RESET}${bsz} ` +
-      `${DIM}avg=${RESET}${ams}ms ` +
-      `${DIM}⚡${RESET}${tps}f/s ` +
-      `${DIM}q=${RESET}${qrem}`
-    );
-  })
-  .join("   ");
-
-    // const workersInfo = Array.from(workerStats.values())
-    //     .map((s) => {
-    //         const age = ((now - s.lastProgress) / 1000).toFixed(1);
-    //         const alive = age < 2 ? GREEN : DIM; // mark inactive if not updating
-    //         return (
-    //             `${alive}W${s.workerId}${RESET} ` +
-    //             `${DIM}b=${RESET}${s.batchSize.toString().padEnd(3)} ` +
-    //             `${DIM}avg=${RESET}${s.avgMsPerBatch.toFixed(1).padStart(4)}ms ` +
-    //             `${DIM}⚡${RESET}${s.throughput.toFixed(0).padStart(4)}f/s ` +
-    //             `${DIM}q=${RESET}${s.queueRemaining.toString().padStart(4)}`
-    //         );
-    //     })
-    //     .join("   ");
+    const workersInfo = Array.from(workerStats.values())
+        .map((s) => {
+            const age = ((now - s.lastProgress) / 1000).toFixed(1);
+            const alive = age < 2 ? GREEN : DIM; // mark inactive if not updating
+            return (
+                `${alive}W${s.workerId}${RESET} ` +
+                `${DIM}b=${RESET}${s.batchSize.toString().padEnd(3)} ` +
+                `${DIM}avg=${RESET}${s.avgMsPerBatch.toFixed(1).padStart(4)}ms ` +
+                `${DIM}⚡${RESET}${s.throughput.toFixed(0).padStart(4)}f/s ` +
+                `${DIM}q=${RESET}${s.queueRemaining.toString().padStart(4)}`
+            );
+        })
+        .join("   ");
 
     output += `   ${workersInfo}\r`;
 
@@ -343,21 +319,18 @@ function finish() {
   // ─────────────────────────────────────────────
   if (jsonReport) {
     
-  
-
     const report = {
-  schemaVersion: 1,
-  timestamp: new Date().toISOString(),
-  target: targetDir,
-  dirsProcessed: completedDirs,
-  filesConverted: totalFiles,
-  dryRun,
-  concurrency,
-  elapsedSeconds: Number(elapsed),
-  perWorkerStats,
-  summary,
-};
-
+      schemaVersion: 1,
+      timestamp: new Date().toISOString(),
+      target: targetDir,
+      dirsProcessed: completedDirs,
+      filesConverted: totalFiles,
+      dryRun,
+      concurrency,
+      elapsedSeconds: Number(elapsed),
+      perWorkerStats,
+      summary,
+    };
 
     let reportPath = customReportPath || path.join(process.cwd(), "report.json");
     if (reportPath.includes("%DATE%")) {

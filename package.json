@@ -30,6 +30,8 @@
     "test": "tests"
   },
   "scripts": {
-    "test": "test"
+    "test": "test",
+    "trend-book": "node tools/trend-book.mjs --dir ./out --recursive --pretty"
+
   }
 }

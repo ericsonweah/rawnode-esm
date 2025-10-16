@@ -516,7 +516,7 @@ class UltraFastServer extends EventEmitter {
                     // Using async import() is an alternative but adds complexity.
                     // For typical plugin loading at startup, require() is usually acceptable.
                     if (this.contentType.debug) console.log(`[Plugin Loader] Attempting to load plugin: ${entryPath}`);
-                    const plugin = /* TODO dynamic require → await import(entryPath.js) */ require(entryPath);
+                    const plugin =  require(entryPath);
                     // --- End Require ---
 
                     // Validate & register using the already reviewed usePlugin

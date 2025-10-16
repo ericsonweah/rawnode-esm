@@ -1,0 +1,44 @@
+name: rawnode-esm-trend-book
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  convert-and-trend:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22' # Node 20+ is fine; match your local (22.17.0)
+
+      - name: Make output directories
+        run: |
+          mkdir -p out/reports
+          mkdir -p out/artifacts
+
+      # Run your converter; write a date-stamped JSON report (schemaVersion: 1 is now embedded)
+      - name: Run conversion (quiet + JSON report)
+        run: |
+          node run.mjs --target ./src --quiet --json-report --report ./out/reports/report-%DATE%.json
+
+      # Build the weekly trend book (and optional CSV). The script is zero-dep and guarded.
+      - name: Build trend book
+        run: |
+          node tools/trend-book.mjs --dir ./out/reports --recursive --pretty --csv ./out/artifacts/trend-book.csv
+          node tools/trend-book.mjs --dir ./out/reports --recursive --pretty --bucket month --out ./out/artifacts/trend-book-month.json
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: rawnode-esm-trends
+          path: |
+            out/reports/*.json
+            out/artifacts/**
+          if-no-files-found: warn
