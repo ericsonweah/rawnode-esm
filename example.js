@@ -1,3 +1,4 @@
+import * as __ns_node_worker_threads from 'node:worker_threads';
 (async function main() {
   import tmp_hash from "./modules/parser/utils/hash.js";
   import * as __tmp_raw from "node:fs";
@@ -40,7 +41,7 @@
   const workerAvail = (() => {
       // ADDED
       try {
-          /* TODO dynamic require → await import("node:worker_threads".js) */ /* TODO dynamic require → await import("node:worker_threads".js) */ require("node:worker_threads");
+          /* TODO dynamic require → await import("node:worker_threads".js) */ /* TODO dynamic require → await import("node:worker_threads".js) */ __ns_node_worker_threads;
           return true;
       } catch {
           return false;

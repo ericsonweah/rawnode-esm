@@ -1,5 +1,5 @@
 {
-  "name": "rawnode-esm",
+  "name": "rnesm",
   "version": "1.0.0",
   "description": "intelligent CommonJS → ESM conversion engine",
   "keywords": [
@@ -23,7 +23,7 @@
   "type": "module",
   "main": "index.mjs",
   "bin": {
-    "rawnode-esm": "bin/rawnode-esm.mjs"
+    "rnesm": "./run.mjs"
   },
   "directories": {
     "doc": "docs",
@@ -32,6 +32,5 @@
   "scripts": {
     "test": "test",
     "trend-book": "node tools/trend-book.mjs --dir ./out --recursive --pretty"
-
   }
 }
