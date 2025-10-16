@@ -42,7 +42,7 @@ const fsp = fs.promises;
 // moved import for http
 let http2;
 try {
-    http2 = require("http2");
+http2 = await import("http2");
 } catch (_) {
     http2 = null;
 } // optional, core-only
@@ -55,10 +55,10 @@ let createStaticMiddleware;
 let OptimizedStaticFileServer;
 let mimeTypes;
 try {
-    createStaticMiddleware = require("../middleware/static-middleware");
+createStaticMiddleware = await import("../middleware/static-middleware/index.js");
 } catch (_) {}
 try {
-    OptimizedStaticFileServer = require("../non-html-static-file-server");
+OptimizedStaticFileServer = await import("../non-html-static-file-server/index.js");
 } catch (_) {}
 try {
     // moved import for mime
@@ -516,7 +516,8 @@ class UltraFastServer extends EventEmitter {
                     // Using async import() is an alternative but adds complexity.
                     // For typical plugin loading at startup, require() is usually acceptable.
                     if (this.contentType.debug) console.log(`[Plugin Loader] Attempting to load plugin: ${entryPath}`);
-                    const plugin =  require(entryPath);
+// dynamic require (variable path)
+const plugin = await import(entryPath);
                     // --- End Require ---
 
                     // Validate & register using the already reviewed usePlugin

@@ -272,6 +272,18 @@ async function transformFile(originalCode, absPath) {
     // ────────────────────────────────────────────────────────────────
 
     // Bare assignment requires (non-const)
+    // e.g. http2 = require("http2");
+    // ────────────────────────────────────────────────────────────────
+    // NEW: bare assignment + dynamic variable requires (FIXED)
+    // ────────────────────────────────────────────────────────────────
+
+    // Bare assignment requires (non-const)
+    // e.g. http2 = require("http2");
+    // ────────────────────────────────────────────────────────────────
+    // NEW: context-aware bare assignment + dynamic variable requires
+    // ────────────────────────────────────────────────────────────────
+
+    // Bare assignment requires (non-const)
     // Automatically converts to top-level import OR dynamic await import if inside try/catch
     code = await replaceAsyncAll(code, /^\s*([A-Za-z_$][\w$]*)\s*=\s*require\(['"]([^'"]+)['"]\)\s*;?/gm, async (match, idx, src) => {
         const [, name, mod] = match;
@@ -332,10 +344,6 @@ async function transformFile(originalCode, absPath) {
             code = (shebang ? `${shebang}\n` : "") + `${uniq.join("\n")}\n\n` + body;
         }
     }
-
-    // ────────────────────────────────────────────────────────────────
-    // END: require replacement
-    // ────────────────────────────────────────────────────────────────
 
     return { code, changed };
 }
