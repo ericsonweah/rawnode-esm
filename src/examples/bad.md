@@ -1,47 +1,64 @@
+import * as __ns_content_types_js from '../content-types.js';
+import * as __ns_req_res_decorators_js from '../decorators/req-res-decorators.js';
+import * as __ns_rate_limiter_js from '../middleware/rate-limiter.js';
+import * as __ns_ndjson_parser_js from '../parsers/ndjson-parser.js';
+import * as __ns_radix_router_js from '../radix-router.js';
+import * as __ns_request_js from '../request.js';
+import * as __ns_response_js from '../response.js';
+import * as __ns_event_emitter_js from './cores/event-emitter.js';
+import * as __ns_async_hooks from 'node:async_hooks';
+import * as __ns_crypto from 'node:crypto';
+import * as __ns_events from 'node:events';
+import * as __ns_fs from 'node:fs';
+import * as __ns_http from 'node:http';
+import * as __ns_path from 'node:path';
+import * as __ns_perf_hooks from 'node:perf_hooks';
+import * as __ns_querystring from 'node:querystring';
+import * as __ns_stream from 'node:stream';
+import * as __ns_util from 'node:util';
+import * as __ns_zlib from 'node:zlib';
+import { createRequire as __createRequire } from 'node:module';
+const require = __createRequire(import.meta.url);
+
 "use strict";
 
 // src/submodules/http-server/index.js
 
-// const { promises: fs } = require("fs");
-const fs = require("fs");
+//const { promises: fs } = __ns_fs;const fs = __ns_fs.default ?? __ns_fs;
 const fsp = fs.promises;
-
-const { join, extname, normalize, sep } = require("path");
-const path = require("path");
-const { createHash, randomUUID } = require("crypto");
-const http = require("http");
+const { join, extname, normalize, sep } = __ns_path;const path = __ns_path.default ?? __ns_path;const { createHash, randomUUID } = __ns_crypto;const http = __ns_http.default ?? __ns_http;
 let http2;
 try {
-    http2 = require("http2");
+const __m_lkrpdp8uwe = await import("node:http2");
+http2 = __m_lkrpdp8uwe.default ?? __m_lkrpdp8uwe;
 } catch (_) {
     http2 = null;
 } // optional, core-only
-
-const { performance } = require("perf_hooks");
-const { AsyncLocalStorage } = require("async_hooks");
+const { performance } = __ns_perf_hooks;const { AsyncLocalStorage } = __ns_async_hooks;
 
 // Optional: integrate first-party static middleware/server (paths may need adjusting in your repo)
 let createStaticMiddleware;
 let OptimizedStaticFileServer;
 let mimeTypes;
 try {
-    createStaticMiddleware = require("../middleware/static-middleware");
+const __m_xgprfrw80fj = await import("../middleware/static-middleware.js");
+createStaticMiddleware = __m_xgprfrw80fj.default ?? __m_xgprfrw80fj;
 } catch (_) {}
 try {
-    OptimizedStaticFileServer = require("../non-html-static-file-server");
+const __m_1o52t532qep = await import("../non-html-static-file-server.js");
+OptimizedStaticFileServer = __m_1o52t532qep.default ?? __m_1o52t532qep;
 } catch (_) {}
 try {
-    const mime = require("../mime-types");
+   const __m_g7p8virtw2b = await import("../mime-types.js");
+const mime = __m_g7p8virtw2b.default ?? __m_g7p8virtw2b;
 
     mimeTypes = mime.types({ as: "object" });
 } catch (_) {
     mimeTypes = {};
 }
+const { once } = __ns_events;
 
-const { once } = require("events");
-
-// SSE pre-wire: uses NDJSONWriter helpers from NDJSONParser (adjust path as needed)
-const NDJSONParser = require("../parsers/ndjson-parser");
+// SSE pre-wire: uses NDJSONWriter helpers from NDJSONParser (adjust path as needed)const NDJSONParser = __ns_ndjson_parser_js.default ?? __ns_ndjson_parser_js;
 const NDJSONWriter = NDJSONParser.NDJSONWriter;
 
 function installSSEOnServerResponse(ServerResponse) {
@@ -110,14 +127,9 @@ function installSSEOnServerResponse(ServerResponse) {
 
 // Install at module load (safe to call multiple times)
 installSSEOnServerResponse(http.ServerResponse);
-
-const { Readable, Writable, PassThrough, Transform } = require("stream");
-// Assuming 'http', 'path', 'url', 'events' (implicitly used by streams) are available
-const querystring = require("querystring"); // Core Node.js module for URL-encoded parsing
-
-const zlib = require("zlib");
-const { promisify } = require("util");
-const stream = require("stream"); // Needed for stream.pipeline
+const { Readable, Writable, PassThrough, Transform } = __ns_stream;
+// Assuming 'http', 'path', 'url', 'events' (implicitly used by streams) are availableconst querystring = __ns_querystring.default ?? __ns_querystring; // Core Node.js module for URL-encoded parsing
+const zlib = __ns_zlib.default ?? __ns_zlib;const { promisify } = __ns_util;const stream = __ns_stream.default ?? __ns_stream; // Needed for stream.pipeline
 
 // Promisify zlib functions for async buffer compression
 const brotliCompress = promisify(zlib.brotliCompress);
@@ -127,9 +139,8 @@ const gzipCompress = promisify(zlib.gzip);
 const DEFAULT_COMPRESSION_THRESHOLD = 1024; // Min bytes to compress
 const DEFAULT_COMPRESSIBLE_TYPES = new Set(["text/plain", "text/html", "text/css", "text/javascript", "application/javascript", "application/json", "application/xml", "image/svg+xml"]);
 
-// const EventEmitter = require("./cores/event-emitter");c
-
-const EventEmitter = require("node:events"); // Core Node.js module for event handling
+//const EventEmitter = __ns_event_emitter_js.default ?? __ns_event_emitter_js;c
+const EventEmitter = __ns_events.default ?? __ns_events; // Core Node.js module for event handling
 
 // ========= HELDPER FUNCTION DEFINITIONS ==========
 // Define these functions outside the class, or as private static methods,
@@ -137,20 +148,14 @@ const EventEmitter = require("node:events"); // Core Node.js module for event ha
 // (but assigning external functions avoids cluttering the class prototype directly).
 
 // --- Helper function to resolve paths ---
-
-const rs = require("../decorators/req-res-decorators");
+const rs = __ns_req_res_decorators_js.default ?? __ns_req_res_decorators_js;
 
 // === Helper function to generate ETag ---
 
-//const TrieNode = require("../trie-node");
-const RadixRouter = require("../radix-router");
-
-const RateLimiter = require("../middleware/rate-limiter");
-
-const ContentType = require("../content-types");
-
-const responseDecorator = require("../response");
-const requestDecorator = require("../request");
+//const TrieNode = require("../trie-node");const RadixRouter = __ns_radix_router_js.default ?? __ns_radix_router_js;
+const RateLimiter = __ns_rate_limiter_js.default ?? __ns_rate_limiter_js;
+const ContentType = __ns_content_types_js.default ?? __ns_content_types_js;
+const responseDecorator = __ns_response_js.default ?? __ns_response_js;const requestDecorator = __ns_request_js.default ?? __ns_request_js;
 
 // --- UltraFastServer Class ---
 
@@ -486,7 +491,8 @@ class UltraFastServer extends EventEmitter {
                     // Using async import() is an alternative but adds complexity.
                     // For typical plugin loading at startup, require() is usually acceptable.
                     if (this.contentType.debug) console.log(`[Plugin Loader] Attempting to load plugin: ${entryPath}`);
-                    const plugin = require(entryPath);
+                   const __m_vbjtm7pho9i = await import(entryPath);
+const plugin = __m_vbjtm7pho9i.default ?? __m_vbjtm7pho9i;
                     // --- End Require ---
 
                     // Validate & register using the already reviewed usePlugin
@@ -889,7 +895,8 @@ class UltraFastServer extends EventEmitter {
      *
      * @example
      * // Assuming 'ejs' package is installed by the user
-     * const ejs = require('ejs');
+     *const __m_6os46avgi7f = await import("ejs");
+const ejs = __m_6os46avgi7f.default ?? __m_6os46avgi7f;
      * server.engine('ejs', ejs.__express); // Register EJS engine
      * server.set('view engine', 'ejs'); // Set default engine
      * server.set('views', './views');    // Set views directory
@@ -7360,5 +7367,4 @@ function createResponseCachePlugin(opts = {}) {
 }
 
 UltraFastServer.ResponseCachePlugin = createResponseCachePlugin;
-
-module.exports = UltraFastServer;
+export default UltraFastServer;

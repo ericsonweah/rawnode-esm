@@ -1,80 +1,77 @@
 import { createRequire as __createRequire } from 'node:module';
 const require = __createRequire(import.meta.url);
-import * as __ns_fs from 'node:fs';
-import * as __ns_join from 'node:path';
-import * as __ns_path from 'node:path';
-import * as __ns_createHash from 'node:crypto';
-import * as __ns_http from 'node:http';
-import * as __ns_performance from 'node:perf_hooks';
-import * as __ns_AsyncLocalStorage from 'node:async_hooks';
-import * as __ns_mime from '../mime-types';
-import * as __ns_once from 'node:events';
-import * as __ns_NDJSONParser from '../parsers/ndjson-parser';
-import * as __ns_Readable from 'node:stream';
-import * as __ns_querystring from 'node:querystring';
-import * as __ns_zlib from 'node:zlib';
-import * as __ns_promisify from 'node:util';
-import * as __ns_stream from 'node:stream';
-import * as __ns_EventEmitter from 'node:events';
-import * as __ns_rs from '../decorators/req-res-decorators';
-import * as __ns_RadixRouter from '../radix-router';
-import * as __ns_RateLimiter from '../middleware/rate-limiter';
-import * as __ns_ContentType from '../content-types';
-import * as __ns_responseDecorator from '../response';
-import * as __ns_requestDecorator from '../request';
-import * as __ns_http2 from 'node:http2';
-import * as __ns_createStaticMiddleware from '../middleware/static-middleware';
-import * as __ns_OptimizedStaticFileServer from '../non-html-static-file-server';
-import * as __ns_EventEmitter from './cores/event-emitter';
-import * as __ns_TrieNode from '../trie-node';
-import * as __ns_ejs from 'ejs';
-
-
+import fs from "fs";
+import path from "path";
+import http from "http";
+import mime from "../mime-types/index.js";
+import NDJSONParser from "../parsers/ndjson-parser/index.js";
+import querystring from "querystring";
+import zlib from "zlib";
+import stream from "stream";
+import EventEmitter from "./cores/event-emitter/index.js";
+import EventEmitter from "node:events";
+import rs from "../decorators/req-res-decorators/index.js";
+import TrieNode from "../trie-node/index.js";
+import RadixRouter from "../radix-router/index.js";
+import RateLimiter from "../middleware/rate-limiter/index.js";
+import ContentType from "../content-types/index.js";
+import responseDecorator from "../response/index.js";
+import requestDecorator from "../request/index.js";
+import ejs from "ejs";
+import * as __tmp_fs from "fs";
+import { join, extname, normalize, sep } from "path";
+import { createHash, randomUUID } from "crypto";
+import { performance } from "perf_hooks";
+import { AsyncLocalStorage } from "async_hooks";
+import { once } from "events";
+import { Readable, Writable, PassThrough, Transform } from "stream";
+import { promisify } from "util";
 
 "use strict";
 
 // src/submodules/http-server/index.js
 
-// const { promises: fs } = require("fs");
-const fs = __ns_fs;
+// // moved import for fs
+const fs = __tmp_fs.promises;
+// moved import for fs
 const fsp = fs.promises;
 
-const { join, extname, normalize, sep } = __ns_join;
-const path = __ns_path;
-const { createHash, randomUUID } = __ns_createHash;
-const http = __ns_http;
+// moved import for { join, extname, normalize, sep }
+// moved import for path
+// moved import for { createHash, randomUUID }
+// moved import for http
 let http2;
 try {
-    http2 = __ns_http2
+http2 = await import("http2");
 } catch (_) {
     http2 = null;
 } // optional, core-only
 
-const { performance } = __ns_performance;
-const { AsyncLocalStorage } = __ns_AsyncLocalStorage;
+// moved import for { performance }
+// moved import for { AsyncLocalStorage }
 
 // Optional: integrate first-party static middleware/server (paths may need adjusting in your repo)
 let createStaticMiddleware;
 let OptimizedStaticFileServer;
 let mimeTypes;
 try {
-    createStaticMiddleware = __ns_createStaticMiddleware.default ?? __ns_createStaticMiddleware
+createStaticMiddleware = await import("../middleware/static-middleware/index.js");
 } catch (_) {}
 try {
-    OptimizedStaticFileServer = __ns_OptimizedStaticFileServer.default ?? __ns_OptimizedStaticFileServer
+OptimizedStaticFileServer = await import("../non-html-static-file-server/index.js");
 } catch (_) {}
 try {
-    const mime = __ns_mime.default ?? __ns_mime;
+    // moved import for mime
 
     mimeTypes = mime.types({ as: "object" });
 } catch (_) {
     mimeTypes = {};
 }
 
-const { once } = __ns_once;
+// moved import for { once }
 
 // SSE pre-wire: uses NDJSONWriter helpers from NDJSONParser (adjust path as needed)
-const NDJSONParser = __ns_NDJSONParser.default ?? __ns_NDJSONParser;
+// moved import for NDJSONParser
 const NDJSONWriter = NDJSONParser.NDJSONWriter;
 
 function installSSEOnServerResponse(ServerResponse) {
@@ -144,13 +141,13 @@ function installSSEOnServerResponse(ServerResponse) {
 // Install at module load (safe to call multiple times)
 installSSEOnServerResponse(http.ServerResponse);
 
-const { Readable, Writable, PassThrough, Transform } = __ns_Readable;
+// moved import for { Readable, Writable, PassThrough, Transform }
 // Assuming 'http', 'path', 'url', 'events' (implicitly used by streams) are available
-const querystring = __ns_querystring; // Core Node.js module for URL-encoded parsing
+// moved import for querystring // Core Node.js module for URL-encoded parsing
 
-const zlib = __ns_zlib;
-const { promisify } = __ns_promisify;
-const stream = __ns_stream; // Needed for stream.pipeline
+// moved import for zlib
+// moved import for { promisify }
+// moved import for stream // Needed for stream.pipeline
 
 // Promisify zlib functions for async buffer compression
 const brotliCompress = promisify(zlib.brotliCompress);
@@ -160,9 +157,9 @@ const gzipCompress = promisify(zlib.gzip);
 const DEFAULT_COMPRESSION_THRESHOLD = 1024; // Min bytes to compress
 const DEFAULT_COMPRESSIBLE_TYPES = new Set(["text/plain", "text/html", "text/css", "text/javascript", "application/javascript", "application/json", "application/xml", "image/svg+xml"]);
 
-// const EventEmitter = __ns_EventEmitter.default ?? __ns_EventEmitterc
+// // moved import for EventEmitterc
 
-const EventEmitter = __ns_EventEmitter; // Core Node.js module for event handling
+// moved import for EventEmitter // Core Node.js module for event handling
 
 // ========= HELDPER FUNCTION DEFINITIONS ==========
 // Define these functions outside the class, or as private static methods,
@@ -171,19 +168,19 @@ const EventEmitter = __ns_EventEmitter; // Core Node.js module for event handlin
 
 // --- Helper function to resolve paths ---
 
-const rs = __ns_rs.default ?? __ns_rs;
+// moved import for rs
 
 // === Helper function to generate ETag ---
 
-//const TrieNode = __ns_TrieNode.default ?? __ns_TrieNode
-const RadixRouter = __ns_RadixRouter.default ?? __ns_RadixRouter;
+//// moved import for TrieNode
+// moved import for RadixRouter
 
-const RateLimiter = __ns_RateLimiter.default ?? __ns_RateLimiter;
+// moved import for RateLimiter
 
-const ContentType = __ns_ContentType.default ?? __ns_ContentType;
+// moved import for ContentType
 
-const responseDecorator = __ns_responseDecorator.default ?? __ns_responseDecorator;
-const requestDecorator = __ns_requestDecorator.default ?? __ns_requestDecorator;
+// moved import for responseDecorator
+// moved import for requestDecorator
 
 // --- UltraFastServer Class ---
 
@@ -519,7 +516,8 @@ class UltraFastServer extends EventEmitter {
                     // Using async import() is an alternative but adds complexity.
                     // For typical plugin loading at startup, require() is usually acceptable.
                     if (this.contentType.debug) console.log(`[Plugin Loader] Attempting to load plugin: ${entryPath}`);
-                    const plugin = await import(entryPath);
+// dynamic require (variable path)
+const plugin = await import(entryPath);
                     // --- End Require ---
 
                     // Validate & register using the already reviewed usePlugin
@@ -922,7 +920,7 @@ class UltraFastServer extends EventEmitter {
      *
      * @example
      * // Assuming 'ejs' package is installed by the user
-     * const ejs = __ns_ejs.default ?? __ns_ejs
+     * // moved import for ejs
      * server.engine('ejs', ejs.__express); // Register EJS engine
      * server.set('view engine', 'ejs'); // Set default engine
      * server.set('views', './views');    // Set views directory
@@ -7393,5 +7391,4 @@ function createResponseCachePlugin(opts = {}) {
 }
 
 UltraFastServer.ResponseCachePlugin = createResponseCachePlugin;
-
-export default UltraFastServer;
+export default UltraFastServer
