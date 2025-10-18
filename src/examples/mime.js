@@ -991,7 +991,7 @@ const mime = {
 rebuildExportMirror(mime);
 
 // Export
-export default mime
+export default mime;
 // Optional: build-time serializer (not used at runtime unless you call it)
 // Generates a compact JSON you can embed and freeze for even faster cold starts.
 export const _emitCompact = function _emitCompact() {

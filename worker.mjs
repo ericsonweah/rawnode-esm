@@ -3,12 +3,13 @@
 // /src/worker.mjs — enterprise‑grade, non‑blocking worker for RawNode ESM converter
 // - Keeps { dir, dryRun } message contract and progress/done/error events.
 // - Fully async I/O; bounded concurrency; deterministic ordering; atomic writes.
-// - Cancellation + optional timeout support (see PROTOCOL+ comments).
-// - Preserves existing regex-based transforms & behaviors.
+// - Cancellation + optional timeout support.
+// - Comment‑aware transforms (no matches inside // or /* */ comments).
+// - Export conversions are span‑safe (no "export default X;X;" duplication).
+// - Post‑hoist header fix removes conflicting default‑import names (e.g., EventEmitter).
 
 import { parentPort, threadId } from "node:worker_threads";
 import { opendir, lstat, stat, readFile, writeFile, rename } from "node:fs/promises";
-import { constants as FS } from "node:fs";
 import { join, dirname as pathDirname, resolve as pathResolve, sep as PATH_SEP } from "node:path";
 import os from "node:os";
 import { performance } from "node:perf_hooks";
@@ -18,8 +19,8 @@ import { setTimeout as sleep } from "node:timers/promises";
  * Protocol
  * ──────────────────────────────────────────────────────────────── */
 const WORKER_PROTOCOL_V1 = 1;
-// Inbound:  { dir, dryRun, includeExts?, excludeNames?, concurrency?, timeoutMs? }
-// Outbound: progress | done | error
+// Inbound:  { dir, dryRun, includeExts?, excludeNames?, concurrency?, timeoutMs?, progressEveryMs? }
+// Outbound: progress | done | error | warn
 // Cancel:   { type: 'cancel' }
 
 /* ────────────────────────────────────────────────────────────────
@@ -31,95 +32,51 @@ const byStablePath = (a, b) => toPosix(a).localeCompare(toPosix(b), "en");
 
 /** Minimal async pool with back‑pressure */
 class AsyncPool {
-  constructor(limit) {
-    this.limit = Math.max(1, limit | 0);
-    this.active = 0;
-    this.q = [];
-  }
+  constructor(limit) { this.limit = Math.max(1, limit | 0); this.active = 0; this.q = []; }
   schedule(fn) {
     return new Promise((resolve, reject) => {
       const run = async () => {
         this.active++;
-        try {
-          resolve(await fn());
-        } catch (e) {
-          reject(e);
-        } finally {
-          this.active--;
-          if (this.q.length) this.q.shift()();
-        }
+        try { resolve(await fn()); }
+        catch (e) { reject(e); }
+        finally { this.active--; if (this.q.length) this.q.shift()(); }
       };
       this.active < this.limit ? run() : this.q.push(run);
     });
   }
 }
 
-/** Atomic write using rename (same dir) + shebang preservation upstream */
-
-// Idempotent "createRequire" shim injector for ESM files that still use require()
-function insertRequireShimIfNeeded(code) {
-  // already present?
-  if (/\bcreateRequire\s+as\s+__createRequire\b/.test(code) || /\b__createRequire\(/.test(code)) return code;
-  if (!/\brequire\s*\(/.test(code)) return code; // nothing left that needs the shim
-
-  const header = `import { createRequire as __createRequire } from 'node:module';
-const require = __createRequire(import.meta.url);
-`;
-
-  // preserve a shebang if present; otherwise insert at top
-  if (code.startsWith("#!")) {
-    const nl = code.indexOf("\n");
-    if (nl > -1) return code.slice(0, nl + 1) + header + code.slice(nl + 1);
-  }
-  return header + code;
-}
-
+/** Atomic write using rename (same dir) */
 async function writeFileAtomic(path, data) {
   const tmp = path + `.rawnode-esm.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
   await writeFile(tmp, data);
   await rename(tmp, path);
 }
 
-/** Deterministic, tolerant BFS directory walk with async I/O and skip rules */
+/** Deterministic BFS walk; skip symlinks; yield files */
 async function* walkBFS(root, { excludeNames = new Set(["node_modules", ".git"]) } = {}) {
   const Q = [root];
   while (Q.length) {
     const dir = Q.shift();
-    let dh;
-    try {
-      dh = await opendir(dir);
-    } catch {
-      continue;
-    }
+    let dh; try { dh = await opendir(dir); } catch { continue; }
     const entries = [];
     for await (const ent of dh) entries.push(ent);
-    // sort: dirs first, then files; stable, locale‑fixed
     entries.sort((a, b) =>
       a.isDirectory() === b.isDirectory() ? a.name.localeCompare(b.name, "en") : a.isDirectory() ? -1 : 1
     );
     for (const ent of entries) {
-      const name = ent.name;
-      if (excludeNames.has(name)) continue;
-      const full = join(dir, name);
-      let st;
-      try {
-        st = await lstat(full);
-      } catch {
-        continue;
-      }
-      if (st.isSymbolicLink()) continue; // avoid cycles
-      if (st.isDirectory()) {
-        Q.push(full);
-        continue;
-      }
+      if (excludeNames.has(ent.name)) continue;
+      const full = join(dir, ent.name);
+      let st; try { st = await lstat(full); } catch { continue; }
+      if (st.isSymbolicLink()) continue;
+      if (st.isDirectory()) { Q.push(full); continue; }
       yield full;
     }
-    // yield to keep the worker’s event loop responsive
     await sleep(0);
   }
 }
 
-/** Memoized file/directory checks */
+/** Cached stat */
 const statCache = new Map();
 async function isFile(p) {
   const k = toPosix(p);
@@ -142,252 +99,391 @@ function makeResolveImportPath() {
     const isRelative = mod.startsWith("./") || mod.startsWith("../");
     if (!isRelative) return mod; // builtins or packages unchanged
     const abs = pathResolve(baseDir, mod);
-    const filePath = `${abs}.js`;
+    const filePath  = `${abs}.js`;
     const indexPath = join(abs, "index.js");
-    // micro‑yield every ~50 calls
-    if (++calls % 50 === 0) await Promise.resolve();
+    if (++calls % 64 === 0) await Promise.resolve(); // micro‑yield
     try {
-      if (await isFile(filePath)) return `${mod}.js`;
+      if (await isFile(filePath))  return `${mod}.js`;
       if (await isFile(indexPath)) return `${mod.replace(/\/$/, "")}/index.js`;
-      // default fallback (unchanged behavior)
-      return `${mod.replace(/\/$/, "")}/index.js`;
+      return `${mod.replace(/\/$/, "")}/index.js`; // fallback
     } catch {
       return `${mod.replace(/\/$/, "")}/index.js`;
     }
   };
 }
 
-/** Lightweight scope detection (same as before, but factored) */
-function detectScopes(code) {
+/* ────────────────────────────────────────────────────────────────
+ * Comment & string aware scanners
+ * ──────────────────────────────────────────────────────────────── */
+function buildCommentRanges(src) {
   const ranges = [];
-  const stack = [];
-  const regex = /(function\s+\w*|constructor|class\s+\w+|\w+\s*\([^)]*\)\s*\{)/g;
-  let match;
-  while ((match = regex.exec(code))) {
-    const braceStart = code.indexOf("{", match.index);
-    if (braceStart !== -1) stack.push({ start: braceStart, depth: 1 });
-  }
-  for (let i = 0; i < code.length; i++) {
-    const c = code[i];
-    if (c === "{") stack.forEach((s) => (s.depth += 1));
-    else if (c === "}") {
-      for (const s of stack) {
-        s.depth -= 1;
-        if (s.depth === 0 && !s.done) {
-          ranges.push([s.start, i]);
-          s.done = true;
-        }
-      }
+  let i = 0, len = src.length;
+  let inLine = false, inBlock = false;
+  let str = null, tpl = false, esc = false, depthTpl = 0;
+
+  while (i < len) {
+    const c = src[i], c2 = src[i+1];
+
+    if (inLine) {
+      if (c === "\n") { ranges.push([startLine, i]); inLine = false; }
+      i++; continue;
     }
+    if (inBlock) {
+      if (c === "*" && c2 === "/") { ranges.push([startBlock, i+2]); inBlock = false; i += 2; continue; }
+      i++; continue;
+    }
+
+    if (str) {
+      if (!esc && c === str) { str = null; i++; continue; }
+      esc = !esc && c === "\\"; i++; continue;
+    }
+    if (tpl) {
+      if (!esc && c === "`" && depthTpl === 0) { tpl = false; i++; continue; }
+      if (!esc && c === "$" && c2 === "{") { depthTpl++; i += 2; continue; }
+      if (c === "}") { depthTpl = Math.max(0, depthTpl - 1); i++; continue; }
+      esc = !esc && c === "\\"; i++; continue;
+    }
+
+    // start of string/template
+    if (c === "'" || c === '"') { str = c; i++; continue; }
+    if (c === "`") { tpl = true; i++; continue; }
+
+    // comments
+    if (c === "/" && c2 === "/") { var startLine = i; inLine = true; i += 2; continue; }
+    if (c === "/" && c2 === "*") { var startBlock = i; inBlock = true; i += 2; continue; }
+
+    i++;
   }
+  if (inLine) ranges.push([startLine, len]);
+  if (inBlock) ranges.push([startBlock, len]);
   return ranges;
 }
-const isInside = (i, scopes) => scopes.some(([s, e]) => i > s && i < e);
+function inRanges(idx, ranges) {
+  for (let i=0;i<ranges.length;i++) {
+    const [s,e] = ranges[i];
+    if (idx >= s && idx < e) return true;
+  }
+  return false;
+}
 
-/** Async replace helper for regex with async replacer */
-async function replaceAsyncAll(src, re, replacer) {
+/* ────────────────────────────────────────────────────────────────
+ * Generic async replace (global regex) with guard support
+ * ──────────────────────────────────────────────────────────────── */
+async function replaceAsyncAll(src, re, replacer, isGuarded) {
   re.lastIndex = 0;
-  let out = "",
-    last = 0,
-    m;
+  let out = "", last = 0, m;
   while ((m = re.exec(src))) {
-    out += src.slice(last, m.index) + (await replacer(m, m.index, src));
-    last = m.index + m[0].length;
+    const idx = m.index;
+    out += src.slice(last, idx) + (isGuarded && isGuarded(idx) ? m[0] : await replacer(m, idx, src));
+    last = idx + m[0].length;
   }
   out += src.slice(last);
   return out;
 }
 
 /* ────────────────────────────────────────────────────────────────
- * Core transform (preserves your original logic & ordering)
+ * Core transform
  * ──────────────────────────────────────────────────────────────── */
 async function transformFile(originalCode, absPath) {
   let code = originalCode;
   const baseDir = pathDirname(absPath);
-  const scopes = detectScopes(code);
+  const resolveImportPath = makeResolveImportPath();
+
+  // comment map once
+  const commentRanges = buildCommentRanges(code);
+  const isCommented = (i) => inRanges(i, commentRanges);
+
   const topLevelImports = [];
   const seenImports = new Set();
-  const resolveImportPath = makeResolveImportPath();
   let changed = false;
+
+  // Pre‑scan aliases like: const { promises: fs } = require('fs');
+  const aliasProtect = new Set();
+  {
+    const RE_ALIAS = /(^|[;\s])(?:var|let|const)\s*\{\s*([A-Za-z_$][\w$]*)\s*:\s*([A-Za-z_$][\w$]*)\s*\}\s*=\s*require\(\s*(['"])([^'"]+)\4\s*\)/g;
+    let m;
+    while ((m = RE_ALIAS.exec(code))) {
+      if (isCommented(m.index)) continue;
+      const alias = m[3];
+      aliasProtect.add(alias);
+    }
+  }
+
+  // Helper to hoist import uniquely
+  const hoist = (line) => { if (!seenImports.has(line)) { seenImports.add(line); topLevelImports.push(line); } };
 
   // require('mod')(args)
   code = await replaceAsyncAll(
     code,
-    /const\s+(\w+)\s*=\s*require\(['"]([^'"]+)['"]\)\(([^)]*)\);?/g,
+    /(?:^|[;\s])(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*require\(\s*(['"])([^'"]+)\2\s*\)\s*\(\s*([^)]*)\s*\)\s*;?/g,
     async (m, idx) => {
-      const [, name, mod, args] = m;
+      if (isCommented(idx)) return m[0];
+      const [, name, , mod, args] = m;
       const imp = await resolveImportPath(mod, baseDir);
-      if (isInside(idx, scopes))
-        return `const ${name} = await (async()=> (await import("${imp}")).default(${args}))();`;
-      topLevelImports.push(`import tmp_${name} from "${imp}";`);
+      hoist(`import tmp_${name} from "${imp}";`);
       changed = true;
       return `const ${name} = tmp_${name}(${args});`;
     }
-  );
+  , isCommented);
 
-  // require('mod').member or call
+  // require('mod').member(…?)
   code = await replaceAsyncAll(
     code,
-    /const\s+(\w+)\s*=\s*require\(['"]([^'"]+)['"]\)\.([A-Za-z$_][\w$]*)(\([^)]*\))?/g,
+    /(?:^|[;\s])(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*require\(\s*(['"])([^'"]+)\2\s*\)\.([A-Za-z_$][\w$]*)(\s*\([^)]*\))?\s*;?/g,
     async (m, idx) => {
-      const [, name, mod, member, call = ""] = m;
+      if (isCommented(idx)) return m[0];
+      const [, name, , mod, member, call = ""] = m;
       const imp = await resolveImportPath(mod, baseDir);
-      if (isInside(idx, scopes))
-        return `const ${name} = await (async()=> (await import("${imp}")).${member}${call})();`;
-      topLevelImports.push(`import * as __tmp_${name} from "${imp}";`);
+      hoist(`import * as __tmp_${name} from "${imp}";`);
       changed = true;
       return `const ${name} = __tmp_${name}.${member}${call};`;
     }
-  );
+  , isCommented);
 
-  // const x = require('mod')
-  // bare assignment: foo = require('mod')
-  // We intentionally do NOT hoist this (it often lives in try/catch for optional deps).
-  // We just mark that a shim will be required.
-  let __needsRequireShim = false;
-  code = code.replace(
-    /(^|[^\w$])([A-Za-z_$][\w$]*)\s*=\s*require\(\s*(['"])([^'"]+)\3\s*\)\s*;?/gm,
-    (m) => {
-      __needsRequireShim = true;
-      return m; // semantics preserved; shim will be injected below
-    }
-  );
-
+  // const/let/var x = require('mod')  (skip if protected alias name)
   code = await replaceAsyncAll(
     code,
-    /const\s+(\w+)\s*=\s*require\(['"]([^'"]+)['"]\);?/g,
+    /(?:^|[;\s])(?:(var|let|const))\s+([A-Za-z_$][\w$]*)\s*=\s*require\(\s*(['"])([^'"]+)\3\s*\)\s*;?/g,
     async (m, idx) => {
-      const [, name, mod] = m;
+      if (isCommented(idx)) return m[0];
+      const [, , name, , mod] = m;
+      if (aliasProtect.has(name)) return m[0]; // leave as-is to avoid redeclare
       const imp = await resolveImportPath(mod, baseDir);
-      if (isInside(idx, scopes)) return `const ${name} = await (async()=> await import("${imp}"))();`;
-      topLevelImports.push(`import ${name} from "${imp}";`);
+      hoist(`import ${name} from "${imp}";`);
       changed = true;
       return `// moved import for ${name}`;
     }
-  );
+  , isCommented);
 
-  // alias destructuring: const { promises: fs } = require("fs");
+  // alias destructuring: const { promises: fs } = require('fs');
   code = await replaceAsyncAll(
     code,
-    /const\s*\{\s*([A-Za-z$_][\w$]*)\s*:\s*([A-Za-z$_][\w$]*)\s*\}\s*=\s*require\(['"]([^'"]+)['"]\);?/g,
+    /(?:^|[;\s])(?:var|let|const)\s*\{\s*([A-Za-z_$][\w$]*)\s*:\s*([A-Za-z_$][\w$]*)\s*\}\s*=\s*require\(\s*(['"])([^'"]+)\3\s*\)\s*;?/g,
     async (m, idx) => {
-      const [, member, alias, mod] = m;
+      if (isCommented(idx)) return m[0];
+      const [, member, alias, , mod] = m;
       const imp = await resolveImportPath(mod, baseDir);
-      if (isInside(idx, scopes))
-        return `const ${alias} = await (async()=> (await import("${imp}")).${member})()`;
-      topLevelImports.push(`import * as __tmp_${alias} from "${imp}";`);
+      hoist(`import * as __tmp_${alias} from "${imp}";`);
       changed = true;
-      return `// moved import for ${alias}\nconst ${alias} = __tmp_${alias}.${member};`;
+      return `const ${alias} = __tmp_${alias}.${member};`;
     }
-  );
+  , isCommented);
 
-  // destructured require
+  // destructuring: const { a,b } = require('mod')
   code = await replaceAsyncAll(
     code,
-    /const\s*\{\s*([^}]+)\s*\}\s*=\s*require\(['"]([^'"]+)['"]\);?/g,
+    /(?:^|[;\s])(?:var|let|const)\s*\{\s*([^}]+)\s*\}\s*=\s*require\(\s*(['"])([^'"]+)\2\s*\)\s*;?/g,
     async (m, idx) => {
-      const [, names, mod] = m;
+      if (isCommented(idx)) return m[0];
+      const [, namesRaw, , mod] = m;
+      const names = namesRaw.trim().replace(/\s+/g, " ");
       const imp = await resolveImportPath(mod, baseDir);
-      if (isInside(idx, scopes)) return `const { ${names.trim()} } = await (async()=> await import("${imp}"))();`;
-      topLevelImports.push(`import { ${names.trim()} } from "${imp}";`);
+      hoist(`import { ${names} } from "${imp}";`);
       changed = true;
-      return `// moved import for { ${names.trim()} }`;
+      return `// moved import for { ${names} }`;
     }
-  );
+  , isCommented);
 
-  // ────────────────────────────────────────────────────────────────
-  // NEW: bare assignment + dynamic variable requires
-  // ────────────────────────────────────────────────────────────────
-
-  // Bare assignment requires (non-const)
-  // Automatically converts to top-level import OR dynamic await import if inside try/catch
+  // Bare assignment requires: name = require('mod')
   code = await replaceAsyncAll(
     code,
-    /^\s*([A-Za-z_$][\w$]*)\s*=\s*require\(['"]([^'"]+)['"]\)\s*;?/gm,
-    async (match, idx, src) => {
-      const [, name, mod] = match;
+    /(^|\n)\s*([A-Za-z_$][\w$]*)\s*=\s*require\(\s*(['"])([^'"]+)\3\s*\)\s*;?/g,
+    async (m, idx, src) => {
+      if (isCommented(idx)) return m[0];
+      const [, lead, name, , mod] = m;
+      const before = src.slice(Math.max(0, idx - 200), idx);
+      const inTry = /\btry\s*\{[^}]*$/.test(before);
       const imp = await resolveImportPath(mod, baseDir);
-
-      // detect if inside try/catch
-      const before = src.slice(Math.max(0, idx - 80), idx);
-      const inTry = /\btry\s*\{[^}]*$/m.test(before);
-
       changed = true;
+      return inTry ? `${lead}${name} = await import("${imp}");` : `${lead}import ${name} from "${imp}";`;
+    }
+  , isCommented);
 
-      if (inTry) {
-        // inside try/catch → dynamic import
-        return `${name} = await import("${imp}");`;
-      } else {
-        // top-level → static import
-        return `import ${name} from "${imp}";`;
+  // Dynamic variable requires: const x = require(expr)
+  code = await replaceAsyncAll(
+    code,
+    /(?:^|[;\s])(?:(var|let|const))\s+([A-Za-z_$][\w$]*)\s*=\s*require\(\s*([^'")][^)]+)\s*\)\s*;?/g,
+    async (m, idx) => {
+      if (isCommented(idx)) return m[0];
+      const [, decl, name, expr] = m;
+      changed = true;
+      return `${decl} ${name} = await import(${expr.trim()});`;
+    }
+  , isCommented);
+
+  /* ────────────────────────────────────────────────────────────────
+   * Exports — span-safe replacements (no duplication)
+   * ──────────────────────────────────────────────────────────────── */
+  function findStmtEnd(src, from) {
+    let i = from, depth = 0, str = null, tpl = false, esc = false;
+    while (i < src.length) {
+      const c = src[i], n = src[i+1];
+      if (str) { if (!esc && c === str) str = null; esc = !esc && c === "\\"; i++; continue; }
+      if (tpl) {
+        if (!esc && c === "`") { tpl = false; i++; continue; }
+        if (!esc && c === "$" && n === "{") { depth++; i += 2; continue; }
+        if (c === "}") { depth = Math.max(0, depth-1); i++; continue; }
+        esc = !esc && c === "\\"; i++; continue;
       }
+      if (c === "'" || c === '"') { str = c; i++; continue; }
+      if (c === "`") { tpl = true; i++; continue; }
+      if (c === "(" || c === "[" || c === "{") { depth++; i++; continue; }
+      if (c === ")" || c === "]" || c === "}") { depth--; i++; continue; }
+      if (c === ";" && depth === 0) { i++; break; }
+      i++;
     }
-  );
+    return i;
+  }
 
-  // Dynamic variable requires (variable module path)
-  // e.g. const plugin = require(entryPath);
-  code = await replaceAsyncAll(
-    code,
-    /^\s*const\s+([A-Za-z_$][\w$]*)\s*=\s*require\(\s*([^)]+)\s*\)\s*;?/gm,
-    async (match) => {
-      const [, name, variable] = match;
+  {
+    const RE_EQ   = /(^|\n)([ \t]*)module\.exports\s*=\s*/g;
+    const RE_MDOT = /(^|\n)([ \t]*)module\.exports\.([A-Za-z_$][\w$]*)\s*=\s*/g;
+    const RE_EXP  = /(^|\n)([ \t]*)exports\.([A-Za-z_$][\w$]*)\s*=\s*/g;
+
+    function applySplices(src, splices) {
+      if (!splices.length) return src;
+      splices.sort((a,b)=>a[0]-b[0]);
+      let out = "", last = 0;
+      for (const [s,e,rep] of splices) { out += src.slice(last, s) + rep; last = e; }
+      out += src.slice(last);
+      return out;
+    }
+
+    const splices = [];
+    let m;
+
+    while ((m = RE_EQ.exec(code))) {
+      const idx = m.index;
+      if (isCommented(idx)) continue;
+      const lead = m[1] || "", indent = m[2] || "";
+      const rhsStart = RE_EQ.lastIndex;
+      const end = findStmtEnd(code, rhsStart);
+      const rhs = code.slice(rhsStart, end).trim().replace(/;$/, "");
+      const semi = code[end-1] === ";" ? ";" : "";
+      splices.push([idx, end, `${lead}${indent}export default ${rhs}${semi}`]);
       changed = true;
-      return `// dynamic require (variable path)\nconst ${name} = await import(${variable});`;
     }
-  );
-
-  // ────────────────────────────────────────────────────────────────
-  // module.exports / exports.*  — FIXED: always emit valid named exports
-  // ────────────────────────────────────────────────────────────────
-  let hasDefault = false;
-
-  // default: module.exports = RHS;
-  code = code.replace(/(^|\n)\s*module\.exports\s*=\s*([^;]+);?/g, (m, lead, rhs) => {
-    hasDefault = true;
-    changed = true;
-    return `${lead}export default ${rhs}`;
-  });
-
-  // named (exports.name = RHS)
-  code = code.replace(
-    /(^|\n)\s*exports\.([A-Za-z$_][\w$]*)\s*=\s*(?!require)([^;\n]+)/g,
-    (m, lead, key, rhs) => {
+    while ((m = RE_MDOT.exec(code))) {
+      const idx = m.index;
+      if (isCommented(idx)) continue;
+      const lead = m[1] || "", indent = m[2] || "", key = m[3];
+      const rhsStart = RE_MDOT.lastIndex;
+      const end = findStmtEnd(code, rhsStart);
+      const rhs = code.slice(rhsStart, end).trim().replace(/;$/, "");
+      const semi = code[end-1] === ";" ? ";" : "";
+      splices.push([idx, end, `${lead}${indent}export const ${key} = ${rhs}${semi}`]);
       changed = true;
-      return `${lead}export const ${key} = ${rhs}`;
     }
-  );
-
-  // named (module.exports.name = RHS) — always export const (no reexport form)
-  code = code.replace(
-    /(^|\n)\s*module\.exports\.([A-Za-z$_][\w$]*)\s*=\s*([^;\n]+)/g,
-    (m, lead, key, rhs) => {
+    while ((m = RE_EXP.exec(code))) {
+      const idx = m.index;
+      if (isCommented(idx)) continue;
+      const lead = m[1] || "", indent = m[2] || "", key = m[3];
+      const rhsStart = RE_EXP.lastIndex;
+      const end = findStmtEnd(code, rhsStart);
+      const rhs = code.slice(rhsStart, end).trim().replace(/;$/, "");
+      const semi = code[end-1] === ";" ? ";" : "";
+      splices.push([idx, end, `${lead}${indent}export const ${key} = ${rhs}${semi}`]);
       changed = true;
-      return `${lead}export const ${key} = ${rhs}`;
     }
-  );
 
-  // dynamic require comment (unchanged)
-  code = code.replace(
-    /\brequire\(([^)"']+)\)/g,
-    (m) => `/* TODO dynamic require → await import(${m.slice(8, -1)}.js) */ ${m}`
-  );
+    if (splices.length) code = applySplices(code, splices);
+  }
 
   // Hoist top‑level imports uniquely; preserve shebang
   if (topLevelImports.length) {
-    const uniq = topLevelImports.filter((t) => {
-      if (seenImports.has(t)) return false;
-      seenImports.add(t);
-      return true;
-    });
-    if (uniq.length) {
-      const shebang = code.startsWith("#!") ? code.split("\n", 1)[0] : null;
-      const body = shebang ? code.slice(shebang.length + 1) : code;
-      code = (shebang ? `${shebang}\n` : "") + `${uniq.join("\n")}\n\n` + body;
-    }
+    const shebang = code.startsWith("#!") ? code.split("\n", 1)[0] : null;
+    const body = shebang ? code.slice(shebang.length + 1) : code;
+    const header = topLevelImports.join("\n");
+    code = (shebang ? (shebang + "\n") : "") + header + "\n\n" + body;
   }
 
-  // If any require() survived (e.g., dynamic/optional), add a createRequire shim
-  if (/\brequire\s*\(/.test(code)) code = insertRequireShimIfNeeded(code);
+  /* ────────────────────────────────────────────────────────────────
+   * Post‑hoist: dedupe conflicting default‑import names in header
+   *   e.g., "import EventEmitter from 'node:events';"
+   *         and "import EventEmitter from './cores/event-emitter.js';"
+   *   -> keep relative/local spec, drop core/package one.
+   * ──────────────────────────────────────────────────────────────── */
+  code = (() => {
+    const shebang = code.startsWith("#!") ? code.split("\n", 1)[0] : null;
+    const startIdx = shebang ? shebang.length + 1 : 0;
+    // Capture contiguous import lines from top
+    const lines = code.slice(startIdx).split("\n");
+    let i = 0;
+    const importLines = [];
+    while (i < lines.length) {
+      const L = lines[i];
+      if (/^\s*import\b/.test(L)) importLines.push([i, L]);
+      else if (/^\s*$/.test(L)) importLines.push([i, L]); // allow blank lines in header
+      else break;
+      i++;
+    }
+    if (!importLines.length) return code;
+
+    const CORE = new Set(["fs","path","http","http2","https","events","stream","util","zlib","crypto","os","url","querystring","perf_hooks","async_hooks","dns","net","tls","child_process","module"]);
+    const isRelative = (s) => s.startsWith("./") || s.startsWith("../");
+    const isCoreOrPkg = (s) => s.startsWith("node:") || CORE.has(s);
+
+    const parseDefault = (text) => {
+      // import X from '...';
+      const m = text.match(/^\s*import\s+([A-Za-z_$][\w$]*)\s*(?:,\s*\{[^}]*\})?\s*from\s+['"]([^'"]+)['"]\s*;?\s*$/);
+      return m ? { name: m[1], spec: m[2] } : null;
+    };
+
+    const keep = new Array(importLines.length).fill(true);
+    const seen = new Map(); // name -> {spec, k}
+    for (let k=0;k<importLines.length;k++) {
+      const [, text] = importLines[k];
+      const parsed = parseDefault(text);
+      if (!parsed) continue;
+      const { name, spec } = parsed;
+      if (!seen.has(name)) { seen.set(name, {spec, k}); continue; }
+      const prev = seen.get(name);
+      if (prev.spec === spec) { keep[k] = false; continue; } // exact dupe
+      // conflict: prefer relative over core/package, else keep first
+      if (isRelative(spec) && !isRelative(prev.spec)) {
+        keep[prev.k] = false; seen.set(name, {spec, k});
+      } else if (!isRelative(spec) && isRelative(prev.spec)) {
+        keep[k] = false;
+      } else {
+        keep[k] = false;
+      }
+    }
+
+    if (keep.every(Boolean)) return code;
+
+    // rebuild header
+    const rebuilt = lines.slice(0, i).filter((L, idxWithin) => keep[idxWithin] !== false).join("\n");
+    const rest = lines.slice(i).join("\n");
+    return (shebang ? (shebang + "\n") : "") + rebuilt + "\n" + rest;
+  })();
+
+  // Regression guard: accidental “export default X;X;”
+  if (/export\s+default\s+([A-Za-z_$][\w$]*)\s*;\s*\1\s*;/.test(code)) {
+    parentPort?.postMessage({
+      type: "warn",
+      file: absPath,
+      code: "CJS-EXPORT-DUP",
+      message: "Detected duplicated identifier immediately after export default; review transform."
+    });
+  }
+
+  // Determine if a real require( remains outside comments → inject shim
+  const hasRealRequire = (() => {
+    const re = /\brequire\s*\(/g;
+    let m; while ((m = re.exec(code))) {
+      if (!isCommented(m.index)) return true;
+    }
+    return false;
+  })();
+  if (hasRealRequire) {
+    const shim = "import { createRequire as __createRequire } from 'node:module';\nconst require = __createRequire(import.meta.url);\n\n";
+    if (code.startsWith("#!")) {
+      const nl = code.indexOf("\n");
+      if (nl > -1) code = code.slice(0, nl+1) + shim + code.slice(nl+1);
+    } else {
+      code = shim + code;
+    }
+  }
 
   return { code, changed };
 }
@@ -407,89 +503,65 @@ async function replaceRequire(dir, dryRun, opts = {}) {
   let processed = 0;
   let converted = 0;
   let aborted = false;
-  let lastEmittedProcessed = 0; // for local throughput/latency estimation
+  let lastEmittedProcessed = 0;
 
-  const onCancel = (msg) => {
-    if (msg?.type === "cancel") aborted = true;
-  };
+  const onCancel = (msg) => { if (msg?.type === "cancel") aborted = true; };
   parentPort?.on("message", onCancel);
 
   const files = [];
   for await (const p of walkBFS(dir, { excludeNames })) {
-    // extension filter
     const low = p.toLowerCase();
     if ([...includeExts].some((ext) => low.endsWith(ext))) files.push(p);
   }
-  // deterministic ordering
   files.sort(byStablePath);
 
   const promises = [];
   for (const file of files) {
     if (aborted) break;
-    promises.push(
-      pool.schedule(async () => {
-        try {
-          const before = await readFile(file, "utf8");
-          const { code, changed } = await transformFile(before, file);
-          if (changed && !dryRun) await writeFileAtomic(file, code);
-          if (changed) converted++;
-        } catch (e) {
-          // per‑file errors do not crash the batch; report and continue
+    promises.push(pool.schedule(async () => {
+      try {
+        const before = await readFile(file, "utf8");
+        const { code, changed } = await transformFile(before, file);
+        if (changed && !dryRun) await writeFileAtomic(file, code);
+        if (changed) converted++;
+      } catch (e) {
+        parentPort?.postMessage({ type: "error", dir, file, error: e?.message ?? String(e), stack: e?.stack });
+      } finally {
+        processed++;
+        const now = performance.now();
+        if (now - lastEmit >= progressEveryMs) {
+          const elapsed = (now - start) / 1000;
+          const deltaP = processed - lastEmittedProcessed;
+          const deltaMs = Math.max(1, now - lastEmit);
+          const localTps = deltaP > 0 ? deltaP / (deltaMs / 1000) : 0;
+          const avgMsPerBatch = localTps > 0 ? (1000 / localTps) * concurrency : 0;
           parentPort?.postMessage({
-            type: "error",
-            dir,
-            file,
-            error: e?.message ?? String(e),
-            stack: e?.stack,
+            type: "progress",
+            pid: process.pid,
+            threadId,
+            protocol: WORKER_PROTOCOL_V1,
+            queueRemaining: Math.max(0, files.length - processed),
+            processed, converted,
+            throughput: Number((processed / ((now - start) / 1000 + 1e-3)).toFixed(1)),
+            concurrency, batchSize: concurrency, avgMsPerBatch: Number(avgMsPerBatch.toFixed(2)),
           });
-        } finally {
-          processed++;
-          const now = performance.now();
-          if (now - lastEmit >= progressEveryMs) {
-            const elapsed = (now - start) / 1000;
-            const throughput = processed / (elapsed + 1e-3);
-            const deltaP = processed - lastEmittedProcessed;
-            const deltaMs = Math.max(1, now - lastEmit);
-            const localTps = deltaP > 0 ? deltaP / (deltaMs / 1000) : 0; // files/s in this slice
-            const avgMsPerBatch = localTps > 0 ? (1000 / localTps) * concurrency : 0;
-
-            parentPort?.postMessage({
-              type: "progress",
-              pid: process.pid,
-              threadId,
-              protocol: WORKER_PROTOCOL_V1,
-              queueRemaining: Math.max(0, files.length - processed),
-              processed,
-              converted,
-              throughput: Number((processed / ((now - start) / 1000 + 1e-3)).toFixed(1)),
-              concurrency,
-              // 🔁 Back-compat fields expected by run.mjs:
-              batchSize: concurrency,
-              avgMsPerBatch: Number(avgMsPerBatch.toFixed(2)),
-            });
-            lastEmittedProcessed = processed;
-
-            lastEmit = now;
-          }
+          lastEmittedProcessed = processed;
+          lastEmit = now;
         }
-      })
-    );
-    // periodic cooperative yield to keep event loop fluid while scheduling
+      }
+    }));
     if (processed % 64 === 0) await Promise.resolve();
   }
 
-  // Optional overall timeout
   if (opts.timeoutMs && opts.timeoutMs > 0) {
-    const timeout = sleep(opts.timeoutMs, { ref: true }).then(() => {
-      throw new Error(`Worker timeout after ${opts.timeoutMs} ms`);
-    });
+    const timeout = sleep(opts.timeoutMs, { ref: true }).then(() => { throw new Error(`Worker timeout after ${opts.timeoutMs} ms`); });
     await Promise.race([Promise.all(promises), timeout]);
   } else {
     await Promise.all(promises);
   }
 
   parentPort?.off("message", onCancel);
-  if (aborted) return converted; // graceful early stop
+  if (aborted) return converted;
 
   return converted;
 }
@@ -498,8 +570,7 @@ async function replaceRequire(dir, dryRun, opts = {}) {
  * Message handler
  * ──────────────────────────────────────────────────────────────── */
 parentPort?.on("message", async (msg) => {
-  // Back‑compat shape: { dir, dryRun }
-  if (!msg || msg.type === "cancel") return; // cancel handled in replaceRequire
+  if (!msg || msg.type === "cancel") return;
   const start = performance.now();
   try {
     const converted = await replaceRequire(msg.dir, !!msg.dryRun, {
@@ -510,24 +581,11 @@ parentPort?.on("message", async (msg) => {
       progressEveryMs: msg.progressEveryMs,
     });
     const durationMs = performance.now() - start;
-    parentPort?.postMessage({
-      type: "done",
-      dir: msg.dir,
-      converted,
-      durationMs,
-      protocol: WORKER_PROTOCOL_V1,
-      threadId,
-    });
+    parentPort?.postMessage({ type: "done", dir: msg.dir, converted, durationMs, protocol: WORKER_PROTOCOL_V1, threadId });
   } catch (err) {
     const durationMs = performance.now() - start;
-    parentPort?.postMessage({
-      type: "error",
-      dir: msg.dir,
-      durationMs,
-      error: err?.message ?? String(err),
-      stack: err?.stack,
-    });
+    parentPort?.postMessage({ type: "error", dir: msg.dir, durationMs, error: err?.message ?? String(err), stack: err?.stack });
   }
 });
 
-export {}; // ESM marker
+export {};

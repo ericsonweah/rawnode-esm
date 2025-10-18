@@ -23,7 +23,7 @@
   "type": "module",
   "main": "index.mjs",
   "bin": {
-    "rnesm": "bin/index.mjs"
+    "rnesm": "./run.mjs"
   },
   "directories": {
     "doc": "docs",
