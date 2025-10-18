@@ -198,32 +198,16 @@ async function transformFile(originalCode, absPath) {
   let changed = false;
 
   // Pre‑scan aliases like: const { promises: fs } = require('fs');
-  // Pre‑scan aliases inside any require-destructuring (captures mixed lists too)
-const aliasProtect = new Set();
-{
-  const RE_DESTRUCT = /(^|[;\s])(?:var|let|const)\s*\{\s*([^}]+)\s*\}\s*=\s*require\(\s*(['"])([^'"]+)\3\s*\)/g;
-  let m;
-  while ((m = RE_DESTRUCT.exec(code))) {
-    if (isCommented(m.index)) continue;
-    const body = m[2];
-    // collect every  "prop : alias"  pair
-    body.split(",").forEach(part => {
-      const mm = part.trim().match(/^([A-Za-z_$][\w$]*)\s*:\s*([A-Za-z_$][\w$]*)$/);
-      if (mm) aliasProtect.add(mm[2]);
-    });
+  const aliasProtect = new Set();
+  {
+    const RE_ALIAS = /(^|[;\s])(?:var|let|const)\s*\{\s*([A-Za-z_$][\w$]*)\s*:\s*([A-Za-z_$][\w$]*)\s*\}\s*=\s*require\(\s*(['"])([^'"]+)\4\s*\)/g;
+    let m;
+    while ((m = RE_ALIAS.exec(code))) {
+      if (isCommented(m.index)) continue;
+      const alias = m[3];
+      aliasProtect.add(alias);
+    }
   }
-}
-
-  // const aliasProtect = new Set();
-  // {
-  //   const RE_ALIAS = /(^|[;\s])(?:var|let|const)\s*\{\s*([A-Za-z_$][\w$]*)\s*:\s*([A-Za-z_$][\w$]*)\s*\}\s*=\s*require\(\s*(['"])([^'"]+)\4\s*\)/g;
-  //   let m;
-  //   while ((m = RE_ALIAS.exec(code))) {
-  //     if (isCommented(m.index)) continue;
-  //     const alias = m[3];
-  //     aliasProtect.add(alias);
-  //   }
-  // }
 
   // Helper to hoist import uniquely
   const hoist = (line) => { if (!seenImports.has(line)) { seenImports.add(line); topLevelImports.push(line); } };
@@ -286,45 +270,19 @@ const aliasProtect = new Set();
   , isCommented);
 
   // destructuring: const { a,b } = require('mod')
-  // destructuring: const { a, b, x: y } = require('mod')  →  import { a, b, x as y } from 'mod'
-code = await replaceAsyncAll(
-  code,
-  /(?:^|[;\s])(?:var|let|const)\s*\{\s*([^}]+)\s*\}\s*=\s*require\(\s*(['"])([^'"]+)\2\s*\)\s*;?/g,
-  async (m, idx) => {
-    if (isCommented(idx)) return m[0];
-    const [, namesRaw, , mod] = m;
-
-    // Transform every "prop : alias" into "prop as alias"
-    const specList = namesRaw
-      .split(",")
-      .map(s => s.trim())
-      .filter(Boolean)
-      .map(s => {
-        const mm = s.match(/^([A-Za-z_$][\w$]*)\s*:\s*([A-Za-z_$][\w$]*)$/);
-        return mm ? `${mm[1]} as ${mm[2]}` : s.replace(/\s+/g, " ");
-      })
-      .join(", ");
-
-    const imp = await resolveImportPath(mod, baseDir);
-    hoist(`import { ${specList} } from "${imp}";`);
-    changed = true;
-    return `// moved import for { ${specList} }`;
-  }
-, isCommented);
-
-  // code = await replaceAsyncAll(
-  //   code,
-  //   /(?:^|[;\s])(?:var|let|const)\s*\{\s*([^}]+)\s*\}\s*=\s*require\(\s*(['"])([^'"]+)\2\s*\)\s*;?/g,
-  //   async (m, idx) => {
-  //     if (isCommented(idx)) return m[0];
-  //     const [, namesRaw, , mod] = m;
-  //     const names = namesRaw.trim().replace(/\s+/g, " ");
-  //     const imp = await resolveImportPath(mod, baseDir);
-  //     hoist(`import { ${names} } from "${imp}";`);
-  //     changed = true;
-  //     return `// moved import for { ${names} }`;
-  //   }
-  // , isCommented);
+  code = await replaceAsyncAll(
+    code,
+    /(?:^|[;\s])(?:var|let|const)\s*\{\s*([^}]+)\s*\}\s*=\s*require\(\s*(['"])([^'"]+)\2\s*\)\s*;?/g,
+    async (m, idx) => {
+      if (isCommented(idx)) return m[0];
+      const [, namesRaw, , mod] = m;
+      const names = namesRaw.trim().replace(/\s+/g, " ");
+      const imp = await resolveImportPath(mod, baseDir);
+      hoist(`import { ${names} } from "${imp}";`);
+      changed = true;
+      return `// moved import for { ${names} }`;
+    }
+  , isCommented);
 
   // Bare assignment requires: name = require('mod')
   code = await replaceAsyncAll(
