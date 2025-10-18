@@ -1,6 +1,13 @@
 import { createRequire as __createRequire } from 'node:module';
 const require = __createRequire(import.meta.url);
 
+import { performance } from "perf_hooks";
+import { Readable, Writable, PassThrough, Transform } from "stream";
+import { promisify } from "util";
+
+import { createRequire as __createRequire } from 'node:module';
+const require = __createRequire(import.meta.url);
+
 import fs from "fs";
 import path from "path";
 import http from "http";
@@ -34,8 +41,7 @@ http2 = await import("http2");
 } catch (_) {
     http2 = null;
 } // optional, core-only
-
-const { performance } = require("perf_hooks");// moved import for { AsyncLocalStorage }
+// moved import for { performance }// moved import for { AsyncLocalStorage }
 
 // Optional: integrate first-party static middleware/server (paths may need adjusting in your repo)
 let createStaticMiddleware;
@@ -125,11 +131,9 @@ function installSSEOnServerResponse(ServerResponse) {
 
 // Install at module load (safe to call multiple times)
 installSSEOnServerResponse(http.ServerResponse);
-
-const { Readable, Writable, PassThrough, Transform } = require("stream");
+// moved import for { Readable, Writable, PassThrough, Transform }
 // Assuming 'http', 'path', 'url', 'events' (implicitly used by streams) are available// moved import for querystring // Core Node.js module for URL-encoded parsing
-// moved import for zlib
-const { promisify } = require("util");// moved import for stream // Needed for stream.pipeline
+// moved import for zlib// moved import for { promisify }// moved import for stream // Needed for stream.pipeline
 
 // Promisify zlib functions for async buffer compression
 const brotliCompress = promisify(zlib.brotliCompress);
