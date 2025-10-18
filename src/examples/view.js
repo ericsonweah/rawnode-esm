@@ -1,9 +1,5 @@
 import { createRequire as __createRequire } from 'node:module';
 const require = __createRequire(import.meta.url);
-import { fileURLToPath } from 'node:url';
-import { dirname as __dirname_fn } from 'node:path';
-const __filename = fileURLToPath(import.meta.url);
-const __dirname  = __dirname_fn(__filename);
 import tmp_hash from "./modules/parser/utils/hash/index.js";
 import * as __tmp_raw from "node:fs";
 import fs from "node:fs";
@@ -45,7 +41,7 @@ import { Readable } from "node:stream";
 const workerAvail = (() => {
     // ADDED
     try {
-        import "node:worker_threads";
+        require("node:worker_threads");
         return true;
     } catch {
         return false;
@@ -2225,7 +2221,7 @@ class TemplateEngine extends EventEmitter {
                     // Prepare output path (e.g., compiled_views/pages/home.rnv.js)
                     const outFile = path.join(compiledDir, relativePath + ".js");
                     // ... (rest of directory creation, stringify, write file) ...
-                    const moduleCode = `// Precompiled template data for: ${templateName}\nexport default ${JSON.stringify(outputData, null, 2)};`;
+                    const moduleCode = `// Precompiled template data for: ${templateName}\nmodule.exports = ${JSON.stringify(outputData, null, 2)};`;
                     await promises.writeFile(outFile, moduleCode, "utf8");
                     // ... (logging) ...
                     successCount++;
@@ -2391,7 +2387,7 @@ function mergeStacks(parentStacks, childStacks) {
     return result;
 } // ADDED
 
-/* === New code, add anywhere after `export default TemplateEngine;` === */ TemplateEngine.prototype._getTemplateSource = function (templateName) {
+/* === New code, add anywhere after `module.exports = TemplateEngine;` === */ TemplateEngine.prototype._getTemplateSource = function (templateName) {
     // ADDED
     const filePath = path.join(this.viewsPath, templateName + this.viewExtension); // ADDED
     const cacheKey = templateName; // ADDED
@@ -2414,6 +2410,5 @@ function mergeStacks(parentStacks, childStacks) {
         throw err; // ADDED
     } // ADDED
 }; // ADDED
-
-export default TemplateEngine;
+export default TemplateEngine
 

@@ -1,1 +1,0 @@
-{"requires":[{"start":1791,"end":1821,"callee":"require","arg":"node:worker_threads","topLevel":false,"pattern":"assign","lhs":null,"idents":[]}],"exports":[],"uses":{"__dirname":false,"__filename":false,"requireResolve":[],"createRequire":false},"amd":false}
