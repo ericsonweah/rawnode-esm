@@ -7,6 +7,8 @@
 // - Comment‑aware transforms (no matches inside // or /* */ comments).
 // - Export conversions are span‑safe (no "export default X;X;" duplication).
 // - Post‑hoist header fix removes conflicting default‑import names (e.g., EventEmitter).
+// - Idempotent require‑shim injection (no duplicates on re‑runs).
+// - Named‑import aliasing ("x: y" → "x as y") for destructured require.
 
 import { parentPort, threadId } from "node:worker_threads";
 import { opendir, lstat, stat, readFile, writeFile, rename } from "node:fs/promises";
@@ -125,9 +127,9 @@ function buildCommentRanges(src) {
     const c = src[i], c2 = src[i+1];
 
     if (inLine) { if (c === "\n") { ranges.push([startLine, i]); inLine = false; } i++; continue; }
-    if (inBlock) { if (c === "*" && c2 === "/") { ranges.push([startBlock, i+2]); inBlock = false; i += 2; continue; } i++; continue; }
+    if (inBlock){ if (c === "*" && c2 === "/") { ranges.push([startBlock, i+2]); inBlock = false; i += 2; continue; } i++; continue; }
 
-    if (str) { if (!esc && c === str) str = null; esc = !esc && c === "\\"; i++; continue; }
+    if (str) { if (!esc && c === str) { str = null; i++; continue; } esc = !esc && c === "\\"; i++; continue; }
     if (tpl) {
       if (!esc && c === "`" && depthTpl === 0) { tpl = false; i++; continue; }
       if (!esc && c === "$" && c2 === "{") { depthTpl++; i += 2; continue; }
@@ -135,25 +137,20 @@ function buildCommentRanges(src) {
       esc = !esc && c === "\\"; i++; continue;
     }
 
-    // start of string/template
     if (c === "'" || c === '"') { str = c; i++; continue; }
     if (c === "`") { tpl = true; i++; continue; }
 
-    // comments
     if (c === "/" && c2 === "/") { var startLine = i; inLine = true; i += 2; continue; }
     if (c === "/" && c2 === "*") { var startBlock = i; inBlock = true; i += 2; continue; }
 
     i++;
   }
-  if (inLine) ranges.push([startLine, len]);
+  if (inLine)  ranges.push([startLine, len]);
   if (inBlock) ranges.push([startBlock, len]);
   return ranges;
 }
 function inRanges(idx, ranges) {
-  for (let i=0;i<ranges.length;i++) {
-    const [s,e] = ranges[i];
-    if (idx >= s && idx < e) return true;
-  }
+  for (let i=0;i<ranges.length;i++) { const [s,e] = ranges[i]; if (idx >= s && idx < e) return true; }
   return false;
 }
 
@@ -173,25 +170,6 @@ async function replaceAsyncAll(src, re, replacer, isGuarded) {
 }
 
 /* ────────────────────────────────────────────────────────────────
- * Tiny helpers used by transforms
- * ──────────────────────────────────────────────────────────────── */
-const slug = (s) =>
-  String(s).replace(/^node:/, "").replace(/[^\w$]+/g, "_").replace(/^(\d)/, "_$1");
-
-function insertRequireShimIfNeeded(text) {
-  // already present?
-  if (/\bcreateRequire\s+as\s+__createRequire\b/.test(text) || /\b__createRequire\(/.test(text)) return text;
-  if (!/\brequire\s*\(/.test(text)) return text; // nothing left that needs the shim
-
-  const shim = "import { createRequire as __createRequire } from 'node:module';\nconst require = __createRequire(import.meta.url);\n\n";
-  if (text.startsWith("#!")) {
-    const nl = text.indexOf("\n");
-    if (nl > -1) return text.slice(0, nl + 1) + shim + text.slice(nl + 1);
-  }
-  return shim + text;
-}
-
-/* ────────────────────────────────────────────────────────────────
  * Core transform
  * ──────────────────────────────────────────────────────────────── */
 async function transformFile(originalCode, absPath) {
@@ -199,7 +177,6 @@ async function transformFile(originalCode, absPath) {
   const baseDir = pathDirname(absPath);
   const resolveImportPath = makeResolveImportPath();
 
-  // comment map once
   const commentRanges = buildCommentRanges(code);
   const isCommented = (i) => inRanges(i, commentRanges);
 
@@ -207,8 +184,7 @@ async function transformFile(originalCode, absPath) {
   const seenImports = new Set();
   let changed = false;
 
-  // Pre‑scan aliases like: const { promises: fs } = require('fs');
-  // Pre‑scan aliases inside any require-destructuring (captures mixed lists too)
+  // Pre‑scan for aliases used in require‑destructuring so we don’t later re‑declare them via default assigns
   const aliasProtect = new Set();
   {
     const RE_DESTRUCT = /(^|[;\s])(?:var|let|const)\s*\{\s*([^}]+)\s*\}\s*=\s*require\(\s*(['"])([^'"]+)\3\s*\)/g;
@@ -218,15 +194,12 @@ async function transformFile(originalCode, absPath) {
       const body = m[2];
       body.split(",").forEach((part) => {
         const mm = part.trim().match(/^([A-Za-z_$][\w$]*)\s*:\s*([A-Za-z_$][\w$]*)$/);
-        if (mm) aliasProtect.add(mm[2]);
+        if (mm) aliasProtect.add(mm[2]); // collect RHS alias name
       });
     }
   }
 
-  // Helper to hoist import uniquely
-  const hoist = (line) => {
-    if (!seenImports.has(line)) { seenImports.add(line); topLevelImports.push(line); }
-  };
+  const hoist = (line) => { if (!seenImports.has(line)) { seenImports.add(line); topLevelImports.push(line); } };
 
   // require('mod')(args)
   code = await replaceAsyncAll(
@@ -265,7 +238,7 @@ async function transformFile(originalCode, absPath) {
     async (m, idx) => {
       if (isCommented(idx)) return m[0];
       const [, , name, , mod] = m;
-      if (aliasProtect.has(name)) return m[0]; // leave as-is to avoid redeclare
+      if (aliasProtect.has(name)) return m[0]; // avoid redeclare if later used as alias from destructuring
       const imp = await resolveImportPath(mod, baseDir);
       hoist(`import ${name} from "${imp}";`);
       changed = true;
@@ -274,7 +247,7 @@ async function transformFile(originalCode, absPath) {
     isCommented
   );
 
-  // alias destructuring: const { promises: fs } = require('fs');  (single-pair case)
+  // alias destructuring: const { promises: fs } = require('fs');  (single-pair form)
   code = await replaceAsyncAll(
     code,
     /(?:^|[;\s])(?:var|let|const)\s*\{\s*([A-Za-z_$][\w$]*)\s*:\s*([A-Za-z_$][\w$]*)\s*\}\s*=\s*require\(\s*(['"])([^'"]+)\3\s*\)\s*;?/g,
@@ -282,17 +255,16 @@ async function transformFile(originalCode, absPath) {
       if (isCommented(idx)) return m[0];
       const [, member, alias, , mod] = m;
       const imp = await resolveImportPath(mod, baseDir);
-      const ns = `__ns_${slug(imp)}`;
-      hoist(`import * as ${ns} from "${imp}";`);
+      // Prefer a proper named-import alias: { member as alias }
+      hoist(`import { ${member} as ${alias} } from "${imp}";`);
       changed = true;
-      return `const ${alias} = ${ns}.${member};`;
+      return `// moved import for { ${member} as ${alias} }`;
     },
     isCommented
   );
 
-  // **Mixed destructuring fix**:
-  // const { promises: fs, createReadStream, statSync } = require("fs");
-  //  → import * as __ns_fs from "fs"; import { createReadStream, statSync } from "fs"; const fs = __ns_fs.promises;
+  // destructuring (multi): const { a, b, x: y } = require('mod')
+  // → import { a, b, x as y } from 'mod'
   code = await replaceAsyncAll(
     code,
     /(?:^|[;\s])(?:var|let|const)\s*\{\s*([^}]+)\s*\}\s*=\s*require\(\s*(['"])([^'"]+)\2\s*\)\s*;?/g,
@@ -300,66 +272,21 @@ async function transformFile(originalCode, absPath) {
       if (isCommented(idx)) return m[0];
       const [, namesRaw, , mod] = m;
 
-      // Split on top-level commas (simple but sufficient for usual patterns)
-      const parts = namesRaw.split(",").map(s => s.trim()).filter(Boolean);
-
-      const pairs = [];   // [{prop, alias}]
-      const simple = [];  // ["name", "other"]
-      for (const p of parts) {
-        const mm = p.match(/^([A-Za-z_$][\w$]*)\s*:\s*([A-Za-z_$][\w$]*)$/);
-        if (mm) pairs.push({ prop: mm[1], alias: mm[2] });
-        else if (p) simple.push(p.replace(/\s+/g, " "));
-      }
-
-      // If this was *only* simple names, let the standard named-import path handle it below
-      // (but we are *in* this handler already; so if there are no pairs at all, return as-is and
-      // let the original simple-destructuring handler (below) pick it up).
-      if (pairs.length === 0 && simple.length > 0) return m[0];
-
-      const imp = await resolveImportPath(mod, baseDir);
-      const ns  = `__ns_${slug(imp)}`;
-
-      if (pairs.length && simple.length) {
-        hoist(`import * as ${ns} from "${imp}";`);
-        hoist(`import { ${simple.join(", ")} } from "${imp}";`);
-        changed = true;
-        return pairs.map(({prop, alias}) => `const ${alias} = ${ns}.${prop};`).join("\n");
-      }
-
-      if (pairs.length && simple.length === 0) {
-        hoist(`import * as ${ns} from "${imp}";`);
-        changed = true;
-        return pairs.map(({prop, alias}) => `const ${alias} = ${ns}.${prop};`).join("\n");
-      }
-
-      // pairs.length === 0 and simple.length === 0 → fall through (unlikely)
-      return m[0];
-    },
-    isCommented
-  );
-
-  // simple destructuring only: const { a,b } = require('mod')
-  // (runs if the mixed handler above returned original string)
-  code = await replaceAsyncAll(
-    code,
-    /(?:^|[;\s])(?:var|let|const)\s*\{\s*([^}]+)\s*\}\s*=\s*require\(\s*(['"])([^'"]+)\2\s*\)\s*;?/g,
-    async (m, idx) => {
-      if (isCommented(idx)) return m[0];
-      const [, namesRaw, , mod] = m;
-
-      // Only proceed if there are NO alias pairs inside; mixed cases were handled above.
-      if (/\:/.test(namesRaw)) return m[0];
-
-      const names = namesRaw
+      // Transform every "prop : alias" into "prop as alias" (and normalize whitespace)
+      const specList = namesRaw
         .split(",")
-        .map(s => s.trim())
+        .map((s) => s.trim())
         .filter(Boolean)
+        .map((s) => {
+          const mm = s.match(/^([A-Za-z_$][\w$]*)\s*:\s*([A-Za-z_$][\w$]*)$/);
+          return mm ? `${mm[1]} as ${mm[2]}` : s.replace(/\s+/g, " ");
+        })
         .join(", ");
 
       const imp = await resolveImportPath(mod, baseDir);
-      hoist(`import { ${names} } from "${imp}";`);
+      hoist(`import { ${specList} } from "${imp}";`);
       changed = true;
-      return `// moved import for { ${names} }`;
+      return `// moved import for { ${specList} }`;
     },
     isCommented
   );
@@ -389,23 +316,6 @@ async function transformFile(originalCode, absPath) {
       const [, decl, name, expr] = m;
       changed = true;
       return `${decl} ${name} = await import(${expr.trim()});`;
-    },
-    isCommented
-  );
-
-  // Side‑effect only require('x');  → import "x";   (but NOT inside try/catch probes)
-  code = await replaceAsyncAll(
-    code,
-    /(^|\n)\s*require\(\s*(['"])([^'"]+)\2\s*\)\s*;?/g,
-    async (m, idx, src) => {
-      if (isCommented(idx)) return m[0];
-      const [, lead, , mod] = m;
-      const before = src.slice(Math.max(0, idx - 200), idx);
-      const inTry = /\btry\s*\{[^}]*$/.test(before);
-      if (inTry) return m[0]; // preserve sync availability probes
-      const imp = await resolveImportPath(mod, baseDir);
-      changed = true;
-      return `${lead}import "${imp}";`;
     },
     isCommented
   );
@@ -452,8 +362,7 @@ async function transformFile(originalCode, absPath) {
     let m;
 
     while ((m = RE_EQ.exec(code))) {
-      const idx = m.index;
-      if (isCommented(idx)) continue;
+      const idx = m.index; if (isCommented(idx)) continue;
       const lead = m[1] || "", indent = m[2] || "";
       const rhsStart = RE_EQ.lastIndex;
       const end = findStmtEnd(code, rhsStart);
@@ -463,8 +372,7 @@ async function transformFile(originalCode, absPath) {
       changed = true;
     }
     while ((m = RE_MDOT.exec(code))) {
-      const idx = m.index;
-      if (isCommented(idx)) continue;
+      const idx = m.index; if (isCommented(idx)) continue;
       const lead = m[1] || "", indent = m[2] || "", key = m[3];
       const rhsStart = RE_MDOT.lastIndex;
       const end = findStmtEnd(code, rhsStart);
@@ -474,8 +382,7 @@ async function transformFile(originalCode, absPath) {
       changed = true;
     }
     while ((m = RE_EXP.exec(code))) {
-      const idx = m.index;
-      if (isCommented(idx)) continue;
+      const idx = m.index; if (isCommented(idx)) continue;
       const lead = m[1] || "", indent = m[2] || "", key = m[3];
       const rhsStart = RE_EXP.lastIndex;
       const end = findStmtEnd(code, rhsStart);
@@ -497,61 +404,141 @@ async function transformFile(originalCode, absPath) {
   }
 
   /* ────────────────────────────────────────────────────────────────
-   * Post‑hoist: dedupe conflicting default‑import names in header
-   *   e.g., "import EventEmitter from 'node:events';"
-   *         and "import EventEmitter from './cores/event-emitter.js';"
-   *   -> keep relative/local spec, drop core/package one.
+   * Post‑hoist header normalization & de‑dupe
+   *   - remove exact duplicate imports
+   *   - prefer relative over core/package for same default identifier
+   *   - drop default import if a named import binds the same identifier
    * ──────────────────────────────────────────────────────────────── */
   code = (() => {
     const shebang = code.startsWith("#!") ? code.split("\n", 1)[0] : null;
     const startIdx = shebang ? shebang.length + 1 : 0;
-    // Capture contiguous import lines from top
     const lines = code.slice(startIdx).split("\n");
+
     let i = 0;
-    const importLines = [];
+    const headerIdxs = [];  // indices inside 'lines' that belong to header
+    // Treat import lines and blank lines as header; stop on first non-blank, non-import line
     while (i < lines.length) {
       const L = lines[i];
-      if (/^\s*import\b/.test(L)) importLines.push([i, L]);
-      else if (/^\s*$/.test(L)) importLines.push([i, L]); // allow blank lines in header
-      else break;
-      i++;
+      if (/^\s*import\b/.test(L) || /^\s*$/.test(L)) { headerIdxs.push(i); i++; continue; }
+      break;
     }
-    if (!importLines.length) return code;
+    if (headerIdxs.length === 0) return code;
 
+    // Parse helpers
     const CORE = new Set(["fs","path","http","http2","https","events","stream","util","zlib","crypto","os","url","querystring","perf_hooks","async_hooks","dns","net","tls","child_process","module"]);
     const isRelative = (s) => s.startsWith("./") || s.startsWith("../");
 
-    const parseDefault = (text) => {
-      // import X from '...';
-      const m = text.match(/^\s*import\s+([A-Za-z_$][\w$]*)\s*(?:,\s*\{[^}]*\})?\s*from\s+['"]([^'"]+)['"]\s*;?\s*$/);
-      return m ? { name: m[1], spec: m[2] } : null;
+    const parseImport = (text) => {
+      // default + named: import X, { a as b } from '...';
+      // default only:     import X from '...';
+      // named only:       import { a as b } from '...';
+      // namespace:        import * as NS from '...';
+      const m = text.match(/^\s*import\s+(.+?)\s+from\s+['"]([^'"]+)['"]\s*;?\s*$/);
+      if (!m) return null;
+      const lhs = m[1].trim();
+      const spec = m[2].trim();
+
+      const res = { spec, defaultName: null, named: [], ns: null, raw: text };
+
+      // namespace
+      const nsM = lhs.match(/^\*\s+as\s+([A-Za-z_$][\w$]*)$/);
+      if (nsM) { res.ns = nsM[1]; return res; }
+
+      // default + maybe named
+      const defM = lhs.match(/^([A-Za-z_$][\w$]*)(?:\s*,\s*\{([\s\S]*)\})?$/);
+      if (defM) {
+        res.defaultName = defM[1];
+        if (defM[2]) {
+          const inner = defM[2].trim();
+          if (inner) {
+            inner.split(",").forEach((part) => {
+              const p = part.trim();
+              if (!p) return;
+              const nm = p.match(/^([A-Za-z_$][\w$]*)(?:\s+as\s+([A-Za-z_$][\w$]*))?$/);
+              if (nm) res.named.push(nm[2] || nm[1]);
+            });
+          }
+        }
+        return res;
+      }
+
+      // named only
+      const namedM = lhs.match(/^\{([\s\S]*)\}$/);
+      if (namedM) {
+        const inner = namedM[1].trim();
+        if (inner) {
+          inner.split(",").forEach((part) => {
+            const p = part.trim();
+            if (!p) return;
+            const nm = p.match(/^([A-Za-z_$][\w$]*)(?:\s+as\s+([A-Za-z_$][\w$]*))?$/);
+            if (nm) res.named.push(nm[2] || nm[1]);
+          });
+        }
+        return res;
+      }
+
+      return res;
     };
 
-    const keep = new Array(importLines.length).fill(true);
-    const seen = new Map(); // name -> {spec, k}
-    for (let k=0;k<importLines.length;k++) {
-      const [, text] = importLines[k];
-      const parsed = parseDefault(text);
-      if (!parsed) continue;
-      const { name, spec } = parsed;
-      if (!seen.has(name)) { seen.set(name, {spec, k}); continue; }
-      const prev = seen.get(name);
-      if (prev.spec === spec) { keep[k] = false; continue; } // exact dupe
-      // conflict: prefer relative over core/package, else keep first
-      if (isRelative(spec) && !isRelative(prev.spec)) {
-        keep[prev.k] = false; seen.set(name, {spec, k});
-      } else if (!isRelative(spec) && isRelative(prev.spec)) {
-        keep[k] = false;
-      } else {
-        keep[k] = false;
+    // Gather header imports
+    const importRows = headerIdxs
+      .map((idx) => ({ idx, text: lines[idx], parsed: /^\s*import\b/.test(lines[idx]) ? parseImport(lines[idx]) : null }));
+
+    // 1) Drop exact duplicate import lines (textually identical)
+    const seenTexts = new Set();
+    const keep1 = importRows.map((row) => {
+      if (!/^\s*import\b/.test(row.text)) return true; // keep blanks
+      if (seenTexts.has(row.text)) return false;
+      seenTexts.add(row.text);
+      return true;
+    });
+
+    // 2) Resolve default-name conflicts (same local name across imports)
+    const keep2 = keep1.slice();
+    const defaultByName = new Map(); // name -> { spec, k }
+    for (let k = 0; k < importRows.length; k++) {
+      if (!keep2[k]) continue;
+      const row = importRows[k];
+      if (!row.parsed) continue;
+      if (row.parsed.defaultName) {
+        const name = row.parsed.defaultName;
+        if (!defaultByName.has(name)) {
+          defaultByName.set(name, { spec: row.parsed.spec, k });
+        } else {
+          const prev = defaultByName.get(name);
+          const spec = row.parsed.spec, prevSpec = prev.spec;
+          // Prefer relative over core/package; else keep first
+          if (isRelative(spec) && !isRelative(prevSpec)) { keep2[prev.k] = false; defaultByName.set(name, { spec, k }); }
+          else if (!isRelative(spec) && isRelative(prevSpec)) { keep2[k] = false; }
+          else { keep2[k] = false; }
+        }
       }
     }
 
-    if (keep.every(Boolean)) return code;
+    // 3) If a named import binds identifier X anywhere, drop any default import that ALSO binds X (avoids default vs named collisions)
+    const namedBound = new Set();
+    for (let k = 0; k < importRows.length; k++) {
+      if (!keep2[k]) continue;
+      const row = importRows[k];
+      if (!row.parsed) continue;
+      row.parsed.named.forEach((n) => namedBound.add(n));
+    }
+    for (let k = 0; k < importRows.length; k++) {
+      if (!keep2[k]) continue;
+      const row = importRows[k];
+      if (!row.parsed) continue;
+      if (row.parsed.defaultName && namedBound.has(row.parsed.defaultName)) {
+        keep2[k] = false;
+      }
+    }
 
-    // rebuild header
-    const rebuilt = lines.slice(0, i).filter((L, idxWithin) => keep[idxWithin] !== false).join("\n");
-    const rest = lines.slice(i).join("\n");
+    // Rebuild header
+    const rebuilt = lines
+      .slice(0, headerIdxs[headerIdxs.length - 1] + 1)
+      .filter((L, localIdx) => keep2[localIdx] !== false)
+      .join("\n");
+
+    const rest = lines.slice(headerIdxs[headerIdxs.length - 1] + 1).join("\n");
     return (shebang ? (shebang + "\n") : "") + rebuilt + "\n" + rest;
   })();
 
@@ -561,20 +548,28 @@ async function transformFile(originalCode, absPath) {
       type: "warn",
       file: absPath,
       code: "CJS-EXPORT-DUP",
-      message: "Detected duplicated identifier immediately after export default; review transform."
+      message: "Detected duplicated identifier immediately after export default; review transform.",
     });
   }
 
-  // Determine if a real require( remains outside comments → inject shim (idempotent)
+  /* ────────────────────────────────────────────────────────────────
+   * Idempotent require-shim injection (only if real require() remains)
+   * ──────────────────────────────────────────────────────────────── */
   const hasRealRequire = (() => {
     const re = /\brequire\s*\(/g;
-    let m; while ((m = re.exec(code))) {
-      if (!isCommented(m.index)) return true;
-    }
+    let m; while ((m = re.exec(code))) { if (!isCommented(m.index)) return true; }
     return false;
   })();
-  if (hasRealRequire) {
-    code = insertRequireShimIfNeeded(code);
+  const hasRequireShimAlready = /\bcreateRequire\s+as\s+__createRequire\b/.test(code) || /\b__createRequire\(\s*import\.meta\.url\s*\)/.test(code);
+
+  if (hasRealRequire && !hasRequireShimAlready) {
+    const shim = "import { createRequire as __createRequire } from 'node:module';\nconst require = __createRequire(import.meta.url);\n\n";
+    if (code.startsWith("#!")) {
+      const nl = code.indexOf("\n");
+      if (nl > -1) code = code.slice(0, nl + 1) + shim + code.slice(nl + 1);
+    } else {
+      code = shim + code;
+    }
   }
 
   return { code, changed };

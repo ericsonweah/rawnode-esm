@@ -1,6 +1,3 @@
-import { createRequire as __createRequire } from 'node:module';
-const require = __createRequire(import.meta.url);
-
 import { performance } from "perf_hooks";
 import { Readable, Writable, PassThrough, Transform } from "stream";
 import { promisify } from "util";

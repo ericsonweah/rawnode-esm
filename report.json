@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "timestamp": "2025-10-18T21:27:07.819Z",
+  "timestamp": "2025-10-18T23:06:06.173Z",
   "aborted": false,
   "roots": [
     "/Users/ericsonweah/Sites/projects/javascript/node/core/rawnodemvc-documentation/src/core/modules/www.ericsonsweah.com/src/core/modules/rawnode-esm"
@@ -15,7 +15,7 @@
     "node_modules",
     ".git"
   ],
-  "elapsedSeconds": 0.29,
+  "elapsedSeconds": 0.36,
   "totalFilesConverted": 1,
   "totalErrors": 0,
   "perWorkerStats": [
@@ -23,12 +23,12 @@
       "workerId": 1,
       "dirsProcessed": 1,
       "filesConverted": 1,
-      "activeMs": 223.313755,
+      "activeMs": 264.27500800000007,
       "totalMs": 0,
       "batchSize": 24,
-      "avgMsPerBatch": 263.46,
-      "throughput": 160.9,
-      "queueRemaining": 7,
+      "avgMsPerBatch": 1848.98,
+      "throughput": 31.6,
+      "queueRemaining": 31,
       "respawns": 0
     }
   ],
@@ -36,16 +36,16 @@
     {
       "dir": "/Users/ericsonweah/Sites/projects/javascript/node/core/rawnodemvc-documentation/src/core/modules/www.ericsonsweah.com/src/core/modules/rawnode-esm",
       "converted": 1,
-      "durationMs": 223.313755,
+      "durationMs": 264.27500800000007,
       "errors": 0
     }
   ],
   "summary": {
     "avgBatchSize": 24,
-    "avgMsPerBatch": 263.46,
-    "avgThroughput": 160.9,
-    "totalActiveMs": 223.313755,
-    "efficiency": 4.48,
+    "avgMsPerBatch": 1848.98,
+    "avgThroughput": 31.6,
+    "totalActiveMs": 264.27500800000007,
+    "efficiency": 3.78,
     "efficiencyLabel": "🐢 Low"
   }
 }
