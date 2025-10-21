@@ -200,8 +200,13 @@ async function transformFile(originalCode, absPath) {
   const resolveImportPath = makeResolveImportPath();
 
   // comment map once
-  const commentRanges = buildCommentRanges(code);
+  // const commentRanges = buildCommentRanges(code);
+  // const isCommented = (i) => inRanges(i, commentRanges);
+
+    // comment map (refreshable)
+  let commentRanges = buildCommentRanges(code);
   const isCommented = (i) => inRanges(i, commentRanges);
+  const _refreshComments = () => { commentRanges = buildCommentRanges(code); };
 
   const topLevelImports = [];
   const seenImports = new Set();
@@ -410,6 +415,11 @@ async function transformFile(originalCode, absPath) {
     isCommented
   );
 
+
+    // The code has been mutated by require->import passes; refresh the guard map.
+  _refreshComments();
+
+
   /* ────────────────────────────────────────────────────────────────
    * Exports — span-safe replacements (no duplication)
    * ──────────────────────────────────────────────────────────────── */
@@ -564,6 +574,10 @@ async function transformFile(originalCode, absPath) {
       message: "Detected duplicated identifier immediately after export default; review transform."
     });
   }
+
+    // Header hoist (and previous edits) may have shifted offsets again — refresh.
+  _refreshComments();
+
 
   // Determine if a real require( remains outside comments → inject shim (idempotent)
   const hasRealRequire = (() => {
