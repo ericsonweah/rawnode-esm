@@ -283,7 +283,7 @@ async function transformFile(originalCode, absPath) {
     }
   );
 
-  // ── (C) require('mod').member(…?) ──
+  // ── (C) import "mod";.member(…?) ──
   code = await replaceAsyncAll(
     code,
     /(?:^|[;\s])(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*require\(\s*(['"])([^'"]+)\2\s*\)\.([A-Za-z_$][\w$]*)(\s*\([^)]*\))?\s*;?/g,
@@ -336,7 +336,7 @@ async function transformFile(originalCode, absPath) {
     }
   );
 
-  // ── (F) simple const/let/var name = require('mod')  (fallback if any remain) ──
+  // ── (F) simple const/let/var import name from "mod";(fallback if any remain) ──
   code = await replaceAsyncAll(
     code,
     /(?:^|[;\s])(?:(var|let|const))\s+([A-Za-z_$][\w$]*)\s*=\s*require\(\s*(['"])([^'"]+)\3\s*\)\s*;?/g,

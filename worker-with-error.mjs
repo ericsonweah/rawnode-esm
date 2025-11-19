@@ -244,7 +244,8 @@ async function transformFile(originalCode, absPath) {
   // require('mod')(args)
   code = await replaceAsyncAll(
     code,
-    /(?:^|[;\s])(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*require\(\s*(['"])([^'"]+)\2\s*\)\s*\(\s*([^)]*)\s*\)\s*;?/g,
+    // /(?:^|[;\s])(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*require\(\s*(['"])([^'"]+)\2\s*\)\s*\(\s*([^)]*)\s*\)\s*;?/g,
+    /(?:^|[;\s{(])(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*require\(\s*(['"])([^'"]+)\2\s*\)\s*\(\s*([^)]*)\s*\)\s*;?/g,
     async (m, idx) => {
       if (isCommented(idx)) return m[0];
       const [, name, , mod, args] = m;
@@ -260,7 +261,8 @@ async function transformFile(originalCode, absPath) {
   // require('mod').member(…?)
   code = await replaceAsyncAll(
     code,
-    /(?:^|[;\s])(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*require\(\s*(['"])([^'"]+)\2\s*\)\.([A-Za-z_$][\w$]*)(\s*\([^)]*\))?\s*;?/g,
+    // /(?:^|[;\s])(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*require\(\s*(['"])([^'"]+)\2\s*\)\.([A-Za-z_$][\w$]*)(\s*\([^)]*\))?\s*;?/g,
+     /(?:^|[;\s{(])(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*require\(\s*(['"])([^'"]+)\2\s*\)\.([A-Za-z_$][\w$]*)(\s*\([^)]*\))?\s*;?/g,
     async (m, idx) => {
       if (isCommented(idx)) return m[0];
       const [, name, , mod, member, call = ""] = m;
@@ -276,7 +278,8 @@ async function transformFile(originalCode, absPath) {
   // const/let/var x = require('mod')  (skip if protected alias name)
   code = await replaceAsyncAll(
     code,
-    /(?:^|[;\s])(?:(var|let|const))\s+([A-Za-z_$][\w$]*)\s*=\s*require\(\s*(['"])([^'"]+)\3\s*\)\s*;?/g,
+    // /(?:^|[;\s])(?:(var|let|const))\s+([A-Za-z_$][\w$]*)\s*=\s*require\(\s*(['"])([^'"]+)\3\s*\)\s*;?/g,
+    /(?:^|[;\s{(])(?:(var|let|const))\s+([A-Za-z_$][\w$]*)\s*=\s*require\(\s*(['"])([^'"]+)\3\s*\)\s*;?/g,
     async (m, idx) => {
       if (isCommented(idx)) return m[0];
       const [, , name, , mod] = m;
@@ -293,7 +296,8 @@ async function transformFile(originalCode, absPath) {
   // alias destructuring: const { promises: fs } = require('fs');  (single-pair case)
   code = await replaceAsyncAll(
     code,
-    /(?:^|[;\s])(?:var|let|const)\s*\{\s*([A-Za-z_$][\w$]*)\s*:\s*([A-Za-z_$][\w$]*)\s*\}\s*=\s*require\(\s*(['"])([^'"]+)\3\s*\)\s*;?/g,
+    // /(?:^|[;\s])(?:var|let|const)\s*\{\s*([A-Za-z_$][\w$]*)\s*:\s*([A-Za-z_$][\w$]*)\s*\}\s*=\s*require\(\s*(['"])([^'"]+)\3\s*\)\s*;?/g,
+     /(?:^|[;\s{(])(?:var|let|const)\s*\{\s*([A-Za-z_$][\w$]*)\s*:\s*([A-Za-z_$][\w$]*)\s*\}\s*=\s*require\(\s*(['"])([^'"]+)\3\s*\)\s*;?/g,
     async (m, idx) => {
       if (isCommented(idx)) return m[0];
       const [, member, alias, , mod] = m;
@@ -312,7 +316,8 @@ async function transformFile(originalCode, absPath) {
   //  → import * as __ns_fs from "fs"; import { createReadStream, statSync } from "fs"; const fs = __ns_fs.promises;
   code = await replaceAsyncAll(
     code,
-    /(?:^|[;\s])(?:var|let|const)\s*\{\s*([^}]+)\s*\}\s*=\s*require\(\s*(['"])([^'"]+)\2\s*\)\s*;?/g,
+    // /(?:^|[;\s])(?:var|let|const)\s*\{\s*([^}]+)\s*\}\s*=\s*require\(\s*(['"])([^'"]+)\2\s*\)\s*;?/g,
+     /(?:^|[;\s{(])(?:var|let|const)\s*\{\s*([^}]+)\s*\}\s*=\s*require\(\s*(['"])([^'"]+)\2\s*\)\s*;?/g,
     async (m, idx) => {
       if (isCommented(idx)) return m[0];
       const [, namesRaw, , mod] = m;
@@ -360,7 +365,9 @@ async function transformFile(originalCode, absPath) {
   // (runs if the mixed handler above returned original string)
   code = await replaceAsyncAll(
     code,
-    /(?:^|[;\s])(?:var|let|const)\s*\{\s*([^}]+)\s*\}\s*=\s*require\(\s*(['"])([^'"]+)\2\s*\)\s*;?/g,
+    // /(?:^|[;\s])(?:var|let|const)\s*\{\s*([^}]+)\s*\}\s*=\s*require\(\s*(['"])([^'"]+)\2\s*\)\s*;?/g,
+    // /(?:^|[;\s{(])(?:var|let|const)\s*\{\s*([A-Za-z_$][\w$]*)\s*:\s*([A-Za-z_$][\w$]*)\s*\}\s*=\s*require\(\s*(['"])([^'"]+)\3\s*\)\s*;?/g,
+    /(?:^|[;\s{(])(?:var|let|const)\s*\{\s*([^}]+)\s*\}\s*=\s*require\(\s*(['"])([^'"]+)\2\s*\)\s*;?/g,
     async (m, idx) => {
       if (isCommented(idx)) return m[0];
       const [, namesRaw, , mod] = m;
@@ -386,7 +393,8 @@ async function transformFile(originalCode, absPath) {
   // Bare assignment requires: name = require('mod')
   code = await replaceAsyncAll(
     code,
-    /(^|\n)\s*([A-Za-z_$][\w$]*)\s*=\s*require\(\s*(['"])([^'"]+)\3\s*\)\s*;?/g,
+    // /(^|\n)\s*([A-Za-z_$][\w$]*)\s*=\s*require\(\s*(['"])([^'"]+)\3\s*\)\s*;?/g,
+    /(^|\n|[;\s{(])\s*([A-Za-z_$][\w$]*)\s*=\s*require\(\s*(['"])([^'"]+)\3\s*\)\s*;?/g,
     async (m, idx, src) => {
       if (isCommented(idx)) return m[0];
       const [, lead, name, , mod] = m;
@@ -417,7 +425,8 @@ async function transformFile(originalCode, absPath) {
   // Side‑effect only require('x');  → import "x";   (but NOT inside try/catch probes)
   code = await replaceAsyncAll(
     code,
-    /(^|\n)\s*require\(\s*(['"])([^'"]+)\2\s*\)\s*;?/g,
+    // /(^|\n)\s*require\(\s*(['"])([^'"]+)\2\s*\)\s*;?/g,
+    /(^|\n|[;\s{(])\s*require\(\s*(['"])([^'"]+)\2\s*\)\s*;?/g,
     async (m, idx, src) => {
       if (isCommented(idx)) return m[0];
       const [, lead, , mod] = m;

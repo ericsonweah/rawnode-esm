@@ -1992,7 +1992,7 @@ import * as __ns_node_worker_threads from 'node:worker_threads';
           }
   
           // Helpers for cached tokenizer/AST/codegen (only used when tokenizer is enabled)
-          const computeHash = this.useTokenizer ? /* TODO dynamic require → await import("./modules/parser/utils/hash".js) */ /* TODO dynamic require → await import("./modules/parser/utils/hash".js) */ require("./modules/parser/utils/hash") : null; // RNV-NEXT
+          const computeHash = this.useTokenizer ? /* TODO dynamic require → await import("./modules/parser/utils/hash".js) */ /* TODO dynamic require → await import("./modules/parser/utils/hash".js) */ import "./modules/parser/utils/hash/index.js";: null; // RNV-NEXT
   
           // Cached token getter
           const getTokens = (src) => {
